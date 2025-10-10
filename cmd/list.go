@@ -23,7 +23,7 @@ var listCmd = &cobra.Command{
 	Use:   "list [PR_NUMBER] [THREAD_ID]",
 	Short: "List review comments for a pull request",
 	Long:  `List all review comments and suggestions for a pull request.`,
-	Args:  cobra.MaximumNArgs(2),
+	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runList,
 }
 
