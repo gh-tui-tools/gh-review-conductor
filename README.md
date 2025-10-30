@@ -147,6 +147,7 @@ Flags:
 - `--body` – set the reply body directly on the command line
 - `--body-file` – load the reply body from a file
 - `--stdin` – read the reply body from standard input
+- `--resolve` – mark the thread as resolved after replying
 - `--debug` – enable verbose logging for API calls
 
 ## Features
