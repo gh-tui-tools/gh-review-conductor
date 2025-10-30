@@ -113,33 +113,65 @@ variable, or use `--ai-token` flag.
 
 See [docs/AI_INTEGRATION.md](docs/AI_INTEGRATION.md) for detailed AI feature documentation.
 
+### Browse review comments
+
+```bash
+# Browse comments with interactive selector (PR inferred from current branch)
+gh prreview browse
+
+# Browse and open a specific comment ID directly
+gh prreview browse <COMMENT_ID>
+
+# Browse and open a comment on a specific PR
+gh prreview browse <PR_NUMBER> <COMMENT_ID>
+```
+
+The interactive selector allows you to:
+- Navigate with arrow keys
+- View rich preview pane with comment details
+- Press Ctrl+E to open the file in your `$EDITOR`
+- Press Ctrl+B to open the comment in your browser
+- Press / to search/filter comments
+- Press Enter to open in browser
+
 ### Resolve review threads
 
 ```bash
 # Resolve a comment thread (PR inferred from current branch)
+# Prompts for comment ID if not provided
+gh prreview resolve
+
+# Resolve a comment by ID
 gh prreview resolve <COMMENT_ID>
 
-# Resolve a comment thread while specifying the PR
+# Resolve a comment on a specific PR
 gh prreview resolve <PR_NUMBER> <COMMENT_ID>
 
 # Mark the thread as unresolved instead
-gh prreview resolve --unresolve <PR_NUMBER> <COMMENT_ID>
+gh prreview resolve --unresolve <COMMENT_ID>
+
+# Resolve all unresolved comments on the PR
+gh prreview resolve --all
 
 # Enable verbose logging when resolving
-gh prreview resolve --debug <PR_NUMBER> <COMMENT_ID>
+gh prreview resolve --debug <COMMENT_ID>
+```
 
 ### Reply to review comments
 
 ```bash
-# Reply to a review comment (PR inferred from current branch) using your editor
+# Reply to a review comment using your editor (requires comment ID)
 gh prreview comment <COMMENT_ID>
 
-# Reply to a review comment on a specific PR with an inline body
-gh prreview comment <PR_NUMBER> <COMMENT_ID> --body "Thanks for the feedback!"
+# Reply on a specific PR
+gh prreview comment <COMMENT_ID> <PR_NUMBER>
+
+# Reply with an inline body
+gh prreview comment <COMMENT_ID> --body "Thanks for the feedback!"
 
 # Read the reply body from a file or stdin
-gh prreview comment <PR_NUMBER> <COMMENT_ID> --body-file ./reply.txt
-gh prreview comment <PR_NUMBER> <COMMENT_ID> --stdin < reply.md
+gh prreview comment <COMMENT_ID> --body-file ./reply.txt
+gh prreview comment <COMMENT_ID> --stdin < reply.md
 ```
 
 Flags:
@@ -154,7 +186,11 @@ Flags:
 
 - 🔍 Fetches review comments from GitHub PRs
 - 💡 Parses GitHub suggestion blocks
-- ✨ Interactive UI for reviewing changes with colored diff output
+- ✨ **Interactive UI** for all commands with colored author names and status indicators
+  - Cyan for regular users, Yellow for bot accounts
+  - ✅ Green for resolved, ⚠️ Yellow for unresolved status
+  - Rich preview pane with full comment details
+  - Ctrl+E to edit files in `$EDITOR`, Ctrl+B to open in browser
 - 🔗 Clickable links (OSC8) to view comments on GitHub
 - 🎯 Apply changes directly to local files
 - 🔄 Handles multi-line suggestions
@@ -163,6 +199,8 @@ Flags:
 - 🤖 AI-powered suggestion application (adapts to code changes)
 - ✔️  Mark review threads as resolved after applying suggestions
 - 💬 Reply to review comment threads without leaving the terminal
+- 🌐 Browse and open comments directly in your browser
+- 🎨 Beautiful list rendering with author colors and status badges
 
 ## How it works
 

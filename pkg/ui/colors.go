@@ -106,3 +106,145 @@ func RenderMarkdown(text string) (string, error) {
 
 	return strings.TrimSpace(rendered), nil
 }
+
+// ============================================================================
+// Author Styling
+// ============================================================================
+
+// AuthorStyle represents styling information for a GitHub author.
+type AuthorStyle struct {
+	Name  string // Author name (without @ symbol)
+	IsBot bool   // True if author name ends with [bot]
+	Color string // ANSI color code (cyan for users, yellow for bots)
+}
+
+// NewAuthorStyle creates a new author style based on the author name.
+// Bots (ending with [bot]) are colored yellow, regular users in cyan.
+func NewAuthorStyle(author string) *AuthorStyle {
+	style := &AuthorStyle{
+		Name:  author,
+		IsBot: strings.HasSuffix(author, "[bot]"),
+	}
+
+	if style.IsBot {
+		style.Color = ColorYellow
+	} else {
+		style.Color = ColorCyan
+	}
+
+	return style
+}
+
+// Format returns the formatted author string with color (colored "@authorname").
+func (as *AuthorStyle) Format(includeIcon bool) string {
+	_ = includeIcon // Icon parameter unused currently
+	return Colorize(as.Color, "@"+as.Name)
+}
+
+// ============================================================================
+// Status Styling
+// ============================================================================
+
+// StatusStyle represents styling information for resolved/unresolved status.
+type StatusStyle struct {
+	IsResolved bool   // True if resolved, false if unresolved
+	Label      string // "resolved" or "unresolved"
+	Color      string // ANSI color code (green for resolved, yellow for unresolved)
+	Emoji      string // Visual indicator (✅ or ⚠️)
+}
+
+// NewStatusStyle creates a new status style for the given resolved state.
+func NewStatusStyle(isResolved bool) *StatusStyle {
+	style := &StatusStyle{
+		IsResolved: isResolved,
+	}
+
+	if isResolved {
+		style.Label = "resolved"
+		style.Color = ColorGreen
+		style.Emoji = "✅"
+	} else {
+		style.Label = "unresolved"
+		style.Color = ColorYellow
+		style.Emoji = "⚠️"
+	}
+
+	return style
+}
+
+// Format returns the formatted status string with color and emoji.
+// When includeEmoji is true, the emoji indicator is prepended to the status.
+func (ss *StatusStyle) Format(includeEmoji bool) string {
+	if includeEmoji {
+		return fmt.Sprintf("%s %s", ss.Emoji, Colorize(ss.Color, ss.Label))
+	}
+	return Colorize(ss.Color, ss.Label)
+}
+
+// ============================================================================
+// Review List Item Styling
+// ============================================================================
+
+// ReviewListStyle provides formatting for list items showing review comments or suggestions.
+type ReviewListStyle struct {
+	Author *AuthorStyle // Author styling (with bot detection)
+	Status *StatusStyle // Resolution status styling
+}
+
+// NewReviewListStyle creates a new review list style from comment data.
+func NewReviewListStyle(authorName string, isResolved bool) *ReviewListStyle {
+	return &ReviewListStyle{
+		Author: NewAuthorStyle(authorName),
+		Status: NewStatusStyle(isResolved),
+	}
+}
+
+// CommentListStyle is an alias for backward compatibility with resolve.go.
+type CommentListStyle = ReviewListStyle
+
+// NewCommentListStyle creates a new comment list style from comment data.
+// Deprecated: Use NewReviewListStyle instead.
+func NewCommentListStyle(authorName string, isResolved bool) *CommentListStyle {
+	return NewReviewListStyle(authorName, isResolved)
+}
+
+// SuggestionListStyle is an alias for backward compatibility with applier.go.
+type SuggestionListStyle = ReviewListStyle
+
+// NewSuggestionListStyle creates a new suggestion list style from comment data.
+// Deprecated: Use NewReviewListStyle instead.
+func NewSuggestionListStyle(authorName string, isResolved bool) *SuggestionListStyle {
+	return NewReviewListStyle(authorName, isResolved)
+}
+
+// FormatCommentTitle returns a formatted title for comment list display: "@author • ID".
+func (rls *ReviewListStyle) FormatCommentTitle(commentID int64) string {
+	return fmt.Sprintf("%s • %d", rls.Author.Format(false), commentID)
+}
+
+// FormatCommentDescription returns a formatted description for comment list: "file:line [emoji status]".
+func (rls *ReviewListStyle) FormatCommentDescription(filePath string, lineNumber int) string {
+	return fmt.Sprintf("%s:%d %s", filePath, lineNumber, rls.Status.Format(true))
+}
+
+// FormatSuggestionTitle returns a formatted title for suggestion list: "@author • file:line".
+func (rls *ReviewListStyle) FormatSuggestionTitle(filePath string, lineNumber int) string {
+	return fmt.Sprintf("%s • %s:%d", rls.Author.Format(false), filePath, lineNumber)
+}
+
+// FormatSuggestionDescription returns a formatted description with status and tags for suggestion list.
+func (rls *ReviewListStyle) FormatSuggestionDescription(hasSuggestion bool, isOutdated bool) string {
+	var parts []string
+
+	if hasSuggestion {
+		parts = append(parts, "[suggestion]")
+	}
+
+	if isOutdated {
+		parts = append(parts, Colorize(ColorYellow, "⚠️ OUTDATED"))
+	}
+
+	parts = append(parts, rls.Status.Format(true))
+
+	return strings.Join(parts, " ")
+}

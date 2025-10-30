@@ -18,15 +18,15 @@ type AIProvider interface {
 // SuggestionRequest contains all context needed for AI to apply a suggestion
 type SuggestionRequest struct {
 	// Review context
-	ReviewComment    string   // The reviewer's comment/explanation
-	SuggestedCode    string   // The suggested code from the review
-	OriginalDiffHunk string   // The diff hunk from when review was made
-	CommentID        int64    // Comment ID for reference
+	ReviewComment    string // The reviewer's comment/explanation
+	SuggestedCode    string // The suggested code from the review
+	OriginalDiffHunk string // The diff hunk from when review was made
+	CommentID        int64  // Comment ID for reference
 
 	// Current file state
-	FilePath           string   // Path to the file
-	CurrentFileContent string   // Full current file content
-	TargetLineNumber   int      // Approximate line where change should go (0-based)
+	FilePath           string // Path to the file
+	CurrentFileContent string // Full current file content
+	TargetLineNumber   int    // Approximate line where change should go (0-based)
 
 	// Additional context
 	ExpectedLines []string // Lines we expected to find (from diff hunk)

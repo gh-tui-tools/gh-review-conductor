@@ -21,7 +21,8 @@ var (
 var resolveCmd = &cobra.Command{
 	Use:   "resolve [COMMENT_ID] or [PR_NUMBER] [COMMENT_ID]",
 	Short: "Resolve or unresolve review comment threads",
-	Long:  `Mark review comment threads as resolved or unresolved. Use --all to apply the action to all unresolved comments on a PR.
+	Long: `Mark review comment threads as resolved or unresolved. Use --all to apply the action to all unresolved comments on a PR.
+When no arguments are provided, PR is inferred from the current branch and you will be prompted for a comment ID.
 When one argument is provided, it's treated as COMMENT_ID and PR is inferred from the current branch.
 When two arguments are provided, the first is PR_NUMBER and the second is COMMENT_ID.`,
 	Args: cobra.MinimumNArgs(0),
@@ -47,13 +48,23 @@ func runResolve(cmd *cobra.Command, args []string) error {
 
 	// Parse arguments based on count
 	if len(args) == 0 {
-		// No arguments provided, get PR from current branch and require --all
-		if !resolveAll {
-			return fmt.Errorf("either provide COMMENT_ID, or use --all flag with inferred PR")
-		}
+		// No args: infer PR and prompt for comment ID
 		prNumber, err = client.GetCurrentBranchPR()
 		if err != nil {
 			return err
+		}
+
+		// Prompt for comment ID
+		fmt.Printf("Enter comment ID: ")
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read input: %w", err)
+		}
+
+		commentID, err = strconv.ParseInt(strings.TrimSpace(input), 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid comment ID: %s", strings.TrimSpace(input))
 		}
 	} else if len(args) == 1 {
 		// One argument: treat as COMMENT_ID, infer PR from current branch
@@ -86,7 +97,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 
 	// Handle individual comment resolution
 	if commentID == 0 {
-		return fmt.Errorf("comment ID is required when not using --all flag")
+		return fmt.Errorf("no comment selected")
 	}
 
 	return resolveIndividualComment(client, prNumber, commentID)

@@ -24,12 +24,14 @@ var (
 )
 
 var commentCmd = &cobra.Command{
-	Use:   "comment [PR_NUMBER] COMMENT_ID",
+	Use:   "comment COMMENT_ID [PR_NUMBER]",
 	Short: "Reply to a pull request review comment",
 	Long: `Post a reply to an existing pull request review comment thread.
 
-When PR_NUMBER is omitted, the PR for the current branch is used.`,
-	Args: cobra.RangeArgs(1, 2),
+COMMENT_ID is required. You can find comment IDs by using 'gh prreview list'.
+When only COMMENT_ID is provided, the PR is inferred from the current branch.
+When both COMMENT_ID and PR_NUMBER are provided, they are used directly.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: runComment,
 }
 
@@ -49,28 +51,36 @@ func runComment(cmd *cobra.Command, args []string) error {
 	}
 
 	var (
-		prNumber       int
-		commentIDInput string
-		err            error
+		prNumber int
+		commentID int64
+		err      error
 	)
 
-	if len(args) == 1 {
+	// Parse arguments based on count
+	if len(args) == 0 {
+		return fmt.Errorf("comment ID is required. Use 'gh prreview list' to see available comments")
+	} else if len(args) == 1 {
+		// One argument: treat as COMMENT_ID, infer PR from current branch
+		commentIDVal, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid comment ID: %s", args[0])
+		}
+		commentID = commentIDVal
 		prNumber, err = client.GetCurrentBranchPR()
 		if err != nil {
 			return err
 		}
-		commentIDInput = args[0]
-	} else {
-		prNumber, err = strconv.Atoi(args[0])
+	} else if len(args) >= 2 {
+		// Two arguments: first is COMMENT_ID, second is PR_NUMBER
+		commentIDVal, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid PR number: %s", args[0])
+			return fmt.Errorf("invalid comment ID: %s", args[0])
 		}
-		commentIDInput = args[1]
-	}
-
-	commentID, err := strconv.ParseInt(commentIDInput, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid comment ID: %s", commentIDInput)
+		commentID = commentIDVal
+		prNumber, err = strconv.Atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("invalid PR number: %s", args[1])
+		}
 	}
 
 	body, err := resolveCommentBody()

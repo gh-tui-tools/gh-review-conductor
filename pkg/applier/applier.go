@@ -76,110 +76,47 @@ func (a *Applier) ApplyAll(suggestions []*github.ReviewComment) error {
 	return nil
 }
 
-// ApplyInteractive prompts the user for each suggestion
+// ApplyInteractive prompts the user for each suggestion using an interactive selector
 func (a *Applier) ApplyInteractive(suggestions []*github.ReviewComment) error {
-	reader := bufio.NewReader(os.Stdin)
 	applied := 0
 	skipped := 0
+	remaining := make([]*github.ReviewComment, len(suggestions))
+	copy(remaining, suggestions)
 
-	for i, suggestion := range suggestions {
-		// Create clickable link to the review comment
-		fileLocation := fmt.Sprintf("%s:%d", suggestion.Path, suggestion.Line)
-		clickableLocation := ui.CreateHyperlink(suggestion.HTMLURL, fileLocation)
-
-		// Show header with outdated warning if applicable
-		header := fmt.Sprintf("[%d/%d] %s by @%s", i+1, len(suggestions), clickableLocation, suggestion.Author)
-		if suggestion.IsOutdated {
-			header += ui.Colorize(ui.ColorYellow, " ⚠️  OUTDATED")
-		}
-		fmt.Printf("\n%s\n", ui.Colorize(ui.ColorCyan, header))
-		fmt.Printf("%s\n", ui.Colorize(ui.ColorGray, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
-
-		// Show the review comment (without the suggestion block)
-		if commentText := ui.StripSuggestionBlock(suggestion.Body); commentText != "" {
-			fmt.Printf("\n%s\n", ui.Colorize(ui.ColorYellow, "Review comment:"))
-			rendered, err := ui.RenderMarkdown(commentText)
-			if err == nil && rendered != "" {
-				fmt.Println(rendered)
-			} else {
-				// Fallback to wrapped text
-				wrappedComment := ui.WrapText(commentText, 80)
-				fmt.Printf("%s\n", wrappedComment)
-			}
-		}
-
-		// Show the suggestion
-		fmt.Printf("\n%s\n", "Suggested change:")
-		fmt.Println(ui.ColorizeCode(suggestion.SuggestedCode))
-
-		// Show context if available
-		if suggestion.DiffHunk != "" {
-			fmt.Printf("\n%s\n", "Context:")
-			fmt.Println(ui.ColorizeDiff(suggestion.DiffHunk))
-		}
-
-		// Show thread comments (replies)
-		if len(suggestion.ThreadComments) > 0 {
-			fmt.Printf("\n%s\n", ui.Colorize(ui.ColorCyan, "Thread replies:"))
-			for i, threadComment := range suggestion.ThreadComments {
-				fmt.Printf("\n  %s\n", ui.Colorize(ui.ColorGray, fmt.Sprintf("└─ Reply %d by @%s:", i+1, threadComment.Author)))
-				rendered, err := ui.RenderMarkdown(threadComment.Body)
-				if err == nil && rendered != "" {
-					// Indent the rendered markdown
-					lines := strings.Split(rendered, "\n")
-					for _, line := range lines {
-						fmt.Printf("     %s\n", line)
-					}
-				} else {
-					// Fallback to wrapped text
-					wrappedReply := ui.WrapText(threadComment.Body, 75)
-					lines := strings.Split(wrappedReply, "\n")
-					for _, line := range lines {
-						fmt.Printf("     %s\n", line)
-					}
-				}
-			}
-		}
-
-		// Update prompt based on AI availability
-		prompt := "Apply this suggestion? [y/s/q] (yes/skip/quit)"
-		if a.aiProvider != nil {
-			prompt = "Apply this suggestion? [y/s/a/q] (yes/skip/ai-apply/quit)"
-		}
-		fmt.Printf("\n%s ", prompt)
-
-		response, err := reader.ReadString('\n')
+	for len(remaining) > 0 {
+		// Use interactive selector to choose next suggestion
+		renderer := &suggestionRenderer{aiAvailable: a.aiProvider != nil}
+		selected, err := ui.SelectFromList(remaining, renderer)
 		if err != nil {
-			return fmt.Errorf("failed to read input: %w", err)
+			fmt.Printf("\n%s\n", ui.Colorize(ui.ColorGray, "Selection cancelled"))
+			break
 		}
 
-		response = strings.ToLower(strings.TrimSpace(response))
+		// Show detailed view of selected suggestion
+		a.showSuggestionDetails(selected, applied+skipped+1, len(suggestions))
 
-		switch response {
-		case "q", "quit":
-			fmt.Printf("\nStopped. Applied %d/%d suggestions\n", applied, i)
-			return nil
-		case "y", "yes":
-			if err := a.applySuggestion(suggestion); err != nil {
+		// Prompt for action
+		action := a.promptForAction()
+
+		// Process the action
+		switch action {
+		case "apply":
+			if err := a.applySuggestion(selected); err != nil {
 				fmt.Printf("❌ Failed to apply: %v\n", err)
+				skipped++
 			} else {
 				fmt.Printf("✅ Applied\n")
 				applied++
-
-				// Show git diff of what was applied
-				a.showGitDiff(suggestion.Path)
-
-				// Prompt to resolve thread
-				a.promptToResolveThread(suggestion)
+				a.showGitDiff(selected.Path)
+				a.promptToResolveThread(selected)
 			}
-		case "a", "ai", "ai-apply":
+		case "ai":
 			if a.aiProvider == nil {
 				fmt.Printf("❌ AI provider not configured\n")
 				skipped++
 			} else {
-				if err := a.applyWithAI(suggestion, false); err != nil {
-					if err == errEditApplied { // A sentinel error indicating success via edit flow
-						// This is a success case, but messages are already printed by the edit flow.
+				if err := a.applyWithAI(selected, false); err != nil {
+					if err == errEditApplied {
 						applied++
 					} else {
 						fmt.Printf("❌ AI application failed: %v\n", err)
@@ -188,18 +125,24 @@ func (a *Applier) ApplyInteractive(suggestions []*github.ReviewComment) error {
 				} else {
 					fmt.Printf("✅ Applied with AI\n")
 					applied++
-					a.showGitDiff(suggestion.Path)
-
-					// Prompt to resolve thread
-					a.promptToResolveThread(suggestion)
+					a.showGitDiff(selected.Path)
+					a.promptToResolveThread(selected)
 				}
 			}
-		case "s", "skip", "n", "no", "":
+		case "skip":
 			fmt.Printf("⏭️  Skipped\n")
 			skipped++
-		default:
-			fmt.Printf("⏭️  Skipped (unrecognized input)\n")
-			skipped++
+		case "quit":
+			fmt.Printf("\nStopped. Applied %d/%d suggestions\n", applied, len(suggestions))
+			return nil
+		}
+
+		// Remove the processed suggestion from remaining
+		for i, s := range remaining {
+			if s.ID == selected.ID {
+				remaining = append(remaining[:i], remaining[i+1:]...)
+				break
+			}
 		}
 	}
 
@@ -209,6 +152,99 @@ func (a *Applier) ApplyInteractive(suggestions []*github.ReviewComment) error {
 		ui.Colorize(ui.ColorGreen, fmt.Sprintf("%d", applied)),
 		ui.Colorize(ui.ColorYellow, fmt.Sprintf("%d", skipped)))
 	return nil
+}
+
+// showSuggestionDetails displays full details of a selected suggestion
+func (a *Applier) showSuggestionDetails(suggestion *github.ReviewComment, index, total int) {
+	fileLocation := fmt.Sprintf("%s:%d", suggestion.Path, suggestion.Line)
+	clickableLocation := ui.CreateHyperlink(suggestion.HTMLURL, fileLocation)
+
+	header := fmt.Sprintf("[%d/%d] %s by @%s", index, total, clickableLocation, suggestion.Author)
+	if suggestion.IsOutdated {
+		header += ui.Colorize(ui.ColorYellow, " ⚠️  OUTDATED")
+	}
+	fmt.Printf("\n%s\n", ui.Colorize(ui.ColorCyan, header))
+	fmt.Printf("%s\n", ui.Colorize(ui.ColorGray, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
+
+	// Show the review comment
+	if commentText := ui.StripSuggestionBlock(suggestion.Body); commentText != "" {
+		fmt.Printf("\n%s\n", ui.Colorize(ui.ColorYellow, "Review comment:"))
+		rendered, err := ui.RenderMarkdown(commentText)
+		if err == nil && rendered != "" {
+			fmt.Println(rendered)
+		} else {
+			wrappedComment := ui.WrapText(commentText, 80)
+			fmt.Printf("%s\n", wrappedComment)
+		}
+	}
+
+	// Show the suggestion
+	fmt.Printf("\n%s\n", "Suggested change:")
+	fmt.Println(ui.ColorizeCode(suggestion.SuggestedCode))
+
+	// Show context
+	if suggestion.DiffHunk != "" {
+		fmt.Printf("\n%s\n", "Context:")
+		fmt.Println(ui.ColorizeDiff(suggestion.DiffHunk))
+	}
+
+	// Show thread comments
+	if len(suggestion.ThreadComments) > 0 {
+		fmt.Printf("\n%s\n", ui.Colorize(ui.ColorCyan, "Thread replies:"))
+		for i, threadComment := range suggestion.ThreadComments {
+			fmt.Printf("\n  %s\n", ui.Colorize(ui.ColorGray, fmt.Sprintf("└─ Reply %d by @%s:", i+1, threadComment.Author)))
+			rendered, err := ui.RenderMarkdown(threadComment.Body)
+			if err == nil && rendered != "" {
+				lines := strings.Split(rendered, "\n")
+				for _, line := range lines {
+					fmt.Printf("     %s\n", line)
+				}
+			} else {
+				wrappedReply := ui.WrapText(threadComment.Body, 75)
+				lines := strings.Split(wrappedReply, "\n")
+				for _, line := range lines {
+					fmt.Printf("     %s\n", line)
+				}
+			}
+		}
+	}
+}
+
+// promptForAction prompts user for action on the selected suggestion
+func (a *Applier) promptForAction() string {
+	prompt := "Apply this suggestion? [y/s/q] (yes/skip/quit)"
+	if a.aiProvider != nil {
+		prompt = "Apply this suggestion? [y/s/a/q] (yes/skip/ai-apply/quit)"
+	}
+
+	for {
+		fmt.Printf("\n%s ", prompt)
+		var response string
+		_, err := fmt.Scanln(&response)
+		if err != nil {
+			// If scanln fails (e.g., EOF), treat as quit
+			return "quit"
+		}
+
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		switch response {
+		case "y", "yes":
+			return "apply"
+		case "a", "ai", "ai-apply":
+			if a.aiProvider != nil {
+				return "ai"
+			}
+			fmt.Printf("❌ AI provider not configured, please choose again\n")
+		case "s", "skip", "n", "no", "":
+			return "skip"
+		case "q", "quit":
+			return "quit"
+		default:
+			fmt.Printf("⏭️  Unrecognized input, skipping\n")
+			return "skip"
+		}
+	}
 }
 
 // applySuggestion applies a single suggestion to a file using git apply
@@ -874,4 +910,136 @@ func detectLanguage(filePath string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// suggestionRenderer implements ui.ItemRenderer for ReviewComments in the apply context
+type suggestionRenderer struct {
+	aiAvailable bool
+}
+
+func (r *suggestionRenderer) Title(comment *github.ReviewComment) string {
+	style := ui.NewSuggestionListStyle(comment.Author, comment.IsResolved())
+	return style.FormatSuggestionTitle(comment.Path, comment.Line)
+}
+
+func (r *suggestionRenderer) Description(comment *github.ReviewComment) string {
+	style := ui.NewSuggestionListStyle(comment.Author, comment.IsResolved())
+	return style.FormatSuggestionDescription(comment.HasSuggestion, comment.IsOutdated)
+}
+
+func (r *suggestionRenderer) Preview(comment *github.ReviewComment) string {
+	var preview strings.Builder
+	maxLines := 20 // Limit preview to fit screen
+
+	// Header
+	status := "unresolved"
+	statusColor := ui.ColorYellow
+	if comment.IsResolved() {
+		status = "resolved"
+		statusColor = ui.ColorGreen
+	}
+	preview.WriteString(ui.Colorize(ui.ColorCyan, fmt.Sprintf("Author: @%s\n", comment.Author)))
+	preview.WriteString(ui.Colorize(ui.ColorCyan, fmt.Sprintf("Location: %s:%d\n", comment.Path, comment.Line)))
+	preview.WriteString(ui.Colorize(ui.ColorCyan, fmt.Sprintf("Status: %s\n", ui.Colorize(statusColor, status))))
+
+	if comment.IsOutdated {
+		preview.WriteString(ui.Colorize(ui.ColorYellow, "⚠️  OUTDATED\n"))
+	}
+
+	if r.aiAvailable {
+		preview.WriteString(ui.Colorize(ui.ColorGreen, "🤖 AI available\n"))
+	}
+
+	lines := strings.Count(preview.String(), "\n") + 1
+
+	// Review comment (truncated)
+	body := ui.StripSuggestionBlock(comment.Body)
+	if body != "" && lines < maxLines {
+		preview.WriteString("\n--- Comment ---\n")
+		bodyLines := strings.Split(body, "\n")
+		for _, line := range bodyLines {
+			if lines >= maxLines-2 {
+				preview.WriteString("...\n")
+				break
+			}
+			preview.WriteString(line + "\n")
+			lines++
+		}
+	}
+
+	// Suggested code (truncated)
+	if comment.HasSuggestion && comment.SuggestedCode != "" && lines < maxLines {
+		preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Suggested Code ---\n"))
+		codeLines := strings.Split(comment.SuggestedCode, "\n")
+		shown := 0
+		for _, line := range codeLines {
+			if lines >= maxLines-2 || shown >= 6 {
+				preview.WriteString(ui.Colorize(ui.ColorGray, "...\n"))
+				break
+			}
+			preview.WriteString(ui.Colorize(ui.ColorGreen, line+"\n"))
+			lines++
+			shown++
+		}
+	}
+
+	// Diff hunk/context (truncated with coloring) - only if substantial
+	if comment.DiffHunk != "" && lines < maxLines {
+		diffLines := strings.Split(comment.DiffHunk, "\n")
+		// Only show context if it has more than just the header
+		if len(diffLines) > 2 {
+			preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Context ---\n"))
+			shown := 0
+			for _, line := range diffLines {
+				if lines >= maxLines-2 || shown >= 5 {
+					preview.WriteString(ui.Colorize(ui.ColorGray, "...\n"))
+					break
+				}
+				// Color diff lines
+				coloredLine := line
+				if len(line) > 0 {
+					switch line[0] {
+					case '+':
+						coloredLine = ui.Colorize(ui.ColorGreen, line)
+					case '-':
+						coloredLine = ui.Colorize(ui.ColorRed, line)
+					case '@':
+						coloredLine = ui.Colorize(ui.ColorCyan, line)
+					default:
+						coloredLine = ui.Colorize(ui.ColorGray, line)
+					}
+				}
+				preview.WriteString(coloredLine + "\n")
+				lines++
+				shown++
+			}
+		}
+	}
+
+	// Thread replies (just summary)
+	if len(comment.ThreadComments) > 0 && lines < maxLines {
+		preview.WriteString(fmt.Sprintf("\n--- %d Replies ---\n", len(comment.ThreadComments)))
+		for i, threadComment := range comment.ThreadComments {
+			if lines >= maxLines-1 {
+				preview.WriteString("...\n")
+				break
+			}
+			preview.WriteString(fmt.Sprintf("Reply %d by @%s\n", i+1, threadComment.Author))
+			lines++
+		}
+	}
+
+	return preview.String()
+}
+
+func (r *suggestionRenderer) EditPath(comment *github.ReviewComment) string {
+	return comment.Path
+}
+
+func (r *suggestionRenderer) EditLine(comment *github.ReviewComment) int {
+	return comment.Line
+}
+
+func (r *suggestionRenderer) BrowserURL(comment *github.ReviewComment) string {
+	return comment.HTMLURL
 }

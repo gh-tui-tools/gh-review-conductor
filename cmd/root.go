@@ -25,4 +25,5 @@ func init() {
 	rootCmd.AddCommand(applyCmd)
 	rootCmd.AddCommand(resolveCmd)
 	rootCmd.AddCommand(commentCmd)
+	rootCmd.AddCommand(browseCmd)
 }
