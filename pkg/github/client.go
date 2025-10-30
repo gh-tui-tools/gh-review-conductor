@@ -605,3 +605,71 @@ func (c *Client) UnresolveThread(threadID string) error {
 	c.debugLog("Thread unresolved successfully")
 	return nil
 }
+
+// ReplyToReviewComment posts a reply to an existing pull request review comment.
+func (c *Client) ReplyToReviewComment(prNumber int, commentID int64, body string) (*ThreadComment, error) {
+	if commentID == 0 {
+		return nil, fmt.Errorf("comment ID is required")
+	}
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("comment body cannot be empty")
+	}
+
+	repo, err := c.getRepo()
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d/comments/%d/replies", repo, prNumber, commentID)
+	c.debugLog("Posting reply to review comment %d on %s PR #%d", commentID, repo, prNumber)
+
+	tmpFile, err := os.CreateTemp("", "gh-prreview-comment-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	defer func() {
+		_ = os.Remove(tmpFile.Name())
+	}()
+
+	if _, err := tmpFile.WriteString(body); err != nil {
+		_ = tmpFile.Close()
+		return nil, fmt.Errorf("failed to write comment body: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close temporary file: %w", err)
+	}
+
+	stdOut, stdErr, err := gh.Exec("api", endpoint, "-X", "POST", "-f", fmt.Sprintf("body=@%s", tmpFile.Name()))
+	if err != nil {
+		c.debugLog("Failed to post review comment reply: %v", err)
+		if stdErr.Len() > 0 {
+			c.debugLog("Stderr: %s", stdErr.String())
+		}
+		return nil, fmt.Errorf("failed to post review comment reply: %w", err)
+	}
+
+	var response struct {
+		ID      int64  `json:"id"`
+		Body    string `json:"body"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+
+	if err := json.Unmarshal(stdOut.Bytes(), &response); err != nil {
+		if c.debug {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Raw response for ReplyToReviewComment: %s\n", stdOut.String())
+		}
+		return nil, fmt.Errorf("failed to parse API response: %w", err)
+	}
+
+	c.debugLog("Reply created with ID %d", response.ID)
+
+	return &ThreadComment{
+		ID:      response.ID,
+		Body:    response.Body,
+		Author:  response.User.Login,
+		HTMLURL: response.HTMLURL,
+	}, nil
+}
