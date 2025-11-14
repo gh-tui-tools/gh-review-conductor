@@ -105,6 +105,26 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	return resolveIndividualComment(client, prNumber, commentID)
 }
 
+// resolveCommentText handles @file syntax for comment text
+// If the text starts with @, it reads from the file path after @
+// Otherwise returns the text as-is
+func resolveCommentText(text string) (string, error) {
+	if text == "" {
+		return "", nil
+	}
+
+	if strings.HasPrefix(text, "@") {
+		filePath := strings.TrimPrefix(text, "@")
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read comment file %s: %w", filePath, err)
+		}
+		return strings.TrimSpace(string(content)), nil
+	}
+
+	return text, nil
+}
+
 func addCommentToReview(client *github.Client, prNumber int, commentID int64, commentBody string, commentLink string) error {
 	if _, err := client.ReplyToReviewComment(prNumber, commentID, commentBody); err != nil {
 		fmt.Printf("%s Failed to add comment to %s: %v\\n",
@@ -190,11 +210,21 @@ func resolveAllComments(client *github.Client, prNumber int) error {
 	successCount := 0
 	errorCount := 0
 
+	// Resolve comment text once (with @file support)
+	var commentText string
+	if resolveComment != "" {
+		var err error
+		commentText, err = resolveCommentText(resolveComment)
+		if err != nil {
+			return err
+		}
+	}
+
 	for _, comment := range unresolvedComments {
 		commentLink := ui.CreateHyperlink(comment.HTMLURL, fmt.Sprintf("Comment %d", comment.ID))
 
-		if resolveComment != "" {
-			if err := addCommentToReview(client, prNumber, comment.ID, resolveComment, commentLink); err != nil {
+		if commentText != "" {
+			if err := addCommentToReview(client, prNumber, comment.ID, commentText, commentLink); err != nil {
 				errorCount++
 				continue // Continue to next comment if adding a comment fails
 			}
@@ -260,7 +290,11 @@ func resolveIndividualComment(client *github.Client, prNumber int, commentID int
 		fmt.Sprintf("Comment %d", commentID))
 
 	if resolveComment != "" {
-		if err := addCommentToReview(client, prNumber, commentID, resolveComment, commentLink); err != nil {
+		commentText, err := resolveCommentText(resolveComment)
+		if err != nil {
+			return err
+		}
+		if err := addCommentToReview(client, prNumber, commentID, commentText, commentLink); err != nil {
 			// Log the error but continue to resolve/unresolve the thread
 			fmt.Printf("%s Failed to add comment to %s: %v\n",
 				ui.Colorize(ui.ColorRed, "❌"),
