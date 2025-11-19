@@ -25,6 +25,8 @@ type ItemRenderer[T any] interface {
 	EditPath(item T) string
 	// EditLine returns the line number to go to in editor (1-based, optional)
 	EditLine(item T) int
+	// FilterValue returns the string to match against when filtering
+	FilterValue(item T) string
 }
 
 // CustomAction is a function that handles custom actions on items
@@ -41,10 +43,11 @@ type SelectionModel[T any] struct {
 	onOpen       CustomAction[T]
 	viewport     viewport.Model
 	showDetail   bool
-	filterFunc   func(T) bool
+	filterFunc   func(T, bool) bool
 	filterActive bool
 	renderer     ItemRenderer[T]
 	showHelp     bool
+	onSelect     CustomAction[T]
 }
 
 // Item wraps a generic item for the list model
@@ -54,7 +57,7 @@ type listItem[T any] struct {
 }
 
 func (i listItem[T]) FilterValue() string {
-	return i.item.Title(i.value)
+	return i.item.FilterValue(i.value)
 }
 
 func (i listItem[T]) Title() string {
@@ -68,12 +71,12 @@ func (i listItem[T]) Description() string {
 // SelectFromList creates an interactive selector for a list of items
 // Returns selected items in order they were selected
 func SelectFromList[T any](items []T, renderer ItemRenderer[T]) (T, error) {
-	return SelectFromListWithAction(items, renderer, nil, "", nil, nil)
+	return SelectFromListWithAction(items, renderer, nil, "", nil, nil, nil)
 }
 
 // SelectFromListWithAction creates an interactive selector with a custom action
 // The customAction is triggered by Ctrl+R, and actionKey describes the action in the help text
-func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], customAction CustomAction[T], actionKey string, onOpen CustomAction[T], filterFunc func(T) bool) (T, error) {
+func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], customAction CustomAction[T], actionKey string, onOpen CustomAction[T], filterFunc func(T, bool) bool, onSelect CustomAction[T]) (T, error) {
 	// Convert items to list items
 	listItems := make([]list.Item, len(items))
 	for i, item := range items {
@@ -97,6 +100,7 @@ func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], custom
 		viewport:     viewport.New(0, 0),
 		filterFunc:   filterFunc,
 		renderer:     renderer,
+		onSelect:     onSelect,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -177,6 +181,34 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selected := m.list.SelectedItem()
 			if selected != nil {
 				item := selected.(listItem[T])
+				
+				if m.onSelect != nil {
+					msg, err := m.onSelect(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					
+					if msg == "SHOW_DETAIL" {
+						// Show detail view
+						m.showDetail = true
+						content := item.item.Preview(item.value)
+						wrappedContent := WrapText(content, m.viewport.Width)
+						m.viewport.SetContent(wrappedContent)
+						m.viewport.GotoTop()
+						return m, nil
+					}
+					
+					// Assume it was a toggle or action that requires refresh
+					m.updateVisibleItems()
+					// Force update of the item in the list to reflect changes
+					m.list.SetItem(m.list.Index(), item)
+					
+					if msg != "" {
+						return m, m.list.NewStatusMessage(msg)
+					}
+					return m, nil
+				}
+				
 				if m.onOpen != nil {
 					// Browse mode: Show Detail
 					m.showDetail = true
@@ -275,7 +307,7 @@ func (m *SelectionModel[T]) editInEditor(filePath string, lineNum int) error {
 func (m *SelectionModel[T]) updateVisibleItems() {
 	var visible []list.Item
 	for _, item := range m.items {
-		if !m.filterActive || m.filterFunc(item) {
+		if m.filterFunc == nil || m.filterFunc(item, m.filterActive) {
 			visible = append(visible, listItem[T]{value: item, item: m.renderer})
 		}
 	}

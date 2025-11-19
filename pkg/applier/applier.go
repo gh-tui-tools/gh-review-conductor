@@ -963,3 +963,7 @@ func (r *suggestionRenderer) EditPath(comment *github.ReviewComment) string {
 func (r *suggestionRenderer) EditLine(comment *github.ReviewComment) int {
 	return comment.Line
 }
+
+func (r *suggestionRenderer) FilterValue(comment *github.ReviewComment) string {
+	return r.Title(comment) + " " + r.Description(comment)
+}
