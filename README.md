@@ -3,7 +3,7 @@
 A GitHub CLI extension that applies review comments and suggestions directly to
 your local checkout.
 
-<img width="1352" height="573" align="right" alt="image" src="https://github.com/user-attachments/assets/544dfab5-1519-415a-866d-8e85b796ae76" />
+<img width="1351" height="500" alt="image" src="https://github.com/user-attachments/assets/1755f11a-9321-49ee-a13e-786a58b2d78e" />
 
 ## Overview
 
