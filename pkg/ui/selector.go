@@ -375,10 +375,10 @@ func (m *SelectionModel[T]) View() string {
 	var helpText string
 	if !m.showHelp {
 		// Compact view
-		helpText = "↑/↓ navigate  •  enter details  •  o open  •  q quit  •  ? more"
+		helpText = "↑/↓ navigate • enter details • o open • h show/hide resolved  • q quit • ? more"
 	} else {
 		// Expanded view
-		helpText = "↑/↓ navigate  •  enter details  •  q quit  •  ? less\n"
+		helpText = "↑/↓ navigate • enter details • q quit • ? less\n"
 
 		var extraCommands []string
 		if m.onOpen != nil {
