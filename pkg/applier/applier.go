@@ -247,90 +247,79 @@ func (a *Applier) promptForAction() string {
 	}
 }
 
-// applySuggestion applies a single suggestion to a file using git apply
+// applySuggestion applies a single suggestion to a file by directly modifying the content
 func (a *Applier) applySuggestion(comment *github.ReviewComment) error {
-	// Create a unified diff patch
-	patch, err := a.createPatch(comment)
-	if err != nil {
-		a.debugLog("Failed to create patch: %v", err)
-		if a.debug {
-			a.debugLog("Suggestion would have replaced with:\n%s", comment.SuggestedCode)
-		}
-		return fmt.Errorf("failed to create patch: %w", err)
-	}
-
-	a.debugLog("Generated patch:\n%s", patch)
-
-	// Apply the patch using git apply
-	cmd := exec.Command("git", "apply", "--unidiff-zero", "-")
-	cmd.Stdin = strings.NewReader(patch)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		a.debugLog("git apply failed: %v\nOutput: %s", err, string(output))
-		// Save the patch to /tmp/ for manual inspection
-		patchFile := fmt.Sprintf("/tmp/gh-prreview-patch-%d.patch", comment.ID)
-
-		// Add diagnostic information to the patch file
-		var patchWithInfo strings.Builder
-		patchWithInfo.WriteString(fmt.Sprintf("# Failed to apply patch for comment ID %d\n", comment.ID))
-		patchWithInfo.WriteString(fmt.Sprintf("# File: %s\n", comment.Path))
-		patchWithInfo.WriteString(fmt.Sprintf("# Comment URL: %s\n", comment.HTMLURL))
-		patchWithInfo.WriteString(fmt.Sprintf("# Error: %v\n", err))
-		patchWithInfo.WriteString("# git apply output:\n")
-		for _, line := range strings.Split(string(output), "\n") {
-			patchWithInfo.WriteString(fmt.Sprintf("# %s\n", line))
-		}
-		patchWithInfo.WriteString("#\n# Generated patch:\n#\n")
-		patchWithInfo.WriteString(patch)
-
-		if writeErr := os.WriteFile(patchFile, []byte(patchWithInfo.String()), 0o644); writeErr == nil {
-			return fmt.Errorf("failed to apply patch (saved to %s for manual review):\n%s", patchFile, string(output))
-		}
-		return fmt.Errorf("failed to apply patch: %w\nOutput: %s", err, string(output))
-	}
-
-	a.debugLog("Patch applied successfully!")
-	return nil
-}
-
-// createPatch creates a unified diff patch from a GitHub suggestion
-// This uses position mapping and diff hunk parsing for accurate line placement
-func (a *Applier) createPatch(comment *github.ReviewComment) (string, error) {
-	a.debugLog("Creating patch for comment ID=%d, Path=%s, Line=%d", comment.ID, comment.Path, comment.Line)
-	a.debugLog("Comment position info: Line=%d, OriginalLine=%d, StartLine=%d, EndLine=%d",
-		comment.Line, comment.OriginalLine, comment.StartLine, comment.EndLine)
-	a.debugLog("DiffSide=%s, IsOutdated=%v", comment.DiffSide, comment.IsOutdated)
+	a.debugLog("Applying suggestion for comment ID=%d, Path=%s, Line=%d", comment.ID, comment.Path, comment.Line)
 
 	// Read the current file
 	fileContent, err := os.ReadFile(comment.Path)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file %s: %w", comment.Path, err)
+		return fmt.Errorf("failed to read file %s: %w", comment.Path, err)
 	}
 	fileLines := strings.Split(string(fileContent), "\n")
-	a.debugLog("Current file has %d lines", len(fileLines))
 
-	// Extract the lines that were added in the PR (+ lines) from DiffHunk
-	addedLines := diffhunk.GetAddedLines(comment.DiffHunk)
-	a.debugLog("DiffHunk:\n%s", comment.DiffHunk)
-	a.debugLog("Extracted %d added lines from diff hunk:", len(addedLines))
-	for i, line := range addedLines {
-		a.debugLog("  [%d] %q", i, line)
+	// Find the lines to replace
+	targetLine, removeCount, err := a.findReplacementTarget(comment, fileLines)
+	if err != nil {
+		return err
 	}
 
+	a.debugLog("Replacing %d lines starting at line %d with suggested code", removeCount, targetLine+1)
+
+	// Prepare the new lines
+	suggestionLines := strings.Split(strings.TrimSuffix(comment.SuggestedCode, "\n"), "\n")
+
+	// Construct the new file content
+	var newFileLines []string
+	
+	// Add lines before the change
+	newFileLines = append(newFileLines, fileLines[:targetLine]...)
+	
+	// Add the suggested lines
+	newFileLines = append(newFileLines, suggestionLines...)
+	
+	// Add lines after the change
+	if targetLine+removeCount < len(fileLines) {
+		newFileLines = append(newFileLines, fileLines[targetLine+removeCount:]...)
+	}
+
+	// Join lines and write back to file
+	// Note: This assumes \n line endings. For mixed line endings, we might want to detect the file's EOL.
+	newContent := strings.Join(newFileLines, "\n")
+	
+	// Preserve trailing newline if the original file had one
+	if strings.HasSuffix(string(fileContent), "\n") && !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+
+	if err := os.WriteFile(comment.Path, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", comment.Path, err)
+	}
+
+	a.debugLog("Successfully applied suggestion to %s", comment.Path)
+	return nil
+}
+
+// findReplacementTarget identifies the start line and number of lines to replace
+func (a *Applier) findReplacementTarget(comment *github.ReviewComment, fileLines []string) (int, int, error) {
+	// Extract the lines that were added in the PR (+ lines) from DiffHunk
+	// These are the lines we expect to find in the local file and replace
+	addedLines := diffhunk.GetAddedLines(comment.DiffHunk)
+	
 	if len(addedLines) == 0 {
-		return "", fmt.Errorf("no added lines found in diff hunk")
+		// If no added lines, this might be a pure addition (no replacement)
+		// But GitHub suggestions usually replace something.
+		// If it's a pure addition, we need to know where to insert.
+		// For now, let's assume we need context.
+		return -1, 0, fmt.Errorf("no added lines found in diff hunk - cannot determine what to replace")
 	}
 
 	// Strategy 1: Try using position mapping from the diff hunk
 	targetLine := -1
 
 	if comment.DiffHunk != "" {
-		// Parse the diff hunk to understand the structure
 		parsedHunk, parseErr := diffhunk.ParseDiffHunk(comment.DiffHunk)
 		if parseErr == nil {
-			a.debugLog("Parsed diff hunk: OldStart=%d, OldLines=%d, NewStart=%d, NewLines=%d",
-				parsedHunk.OldStart, parsedHunk.OldLines, parsedHunk.NewStart, parsedHunk.NewLines)
-
 			// Use the first added line's position
 			for _, line := range parsedHunk.Lines {
 				if line.Type == diffhunk.Add {
@@ -341,15 +330,35 @@ func (a *Applier) createPatch(comment *github.ReviewComment) (string, error) {
 					break
 				}
 			}
-		} else {
-			a.debugLog("Failed to parse diff hunk: %v", parseErr)
 		}
 	}
 
-	// Strategy 2: Fall back to content matching if position mapping didn't work
-	if targetLine == -1 {
-		a.debugLog("Strategy 1 failed, trying Strategy 2 (content matching)")
+	// Strategy 2: Fall back to content matching if position mapping didn't work or verification fails
+	// We verify Strategy 1 first. If it points to the wrong content, we discard it and try Strategy 2.
+	strategy1Valid := false
+	if targetLine != -1 {
+		if targetLine+len(addedLines) <= len(fileLines) {
+			match := true
+			for j := 0; j < len(addedLines); j++ {
+				if fileLines[targetLine+j] != addedLines[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				strategy1Valid = true
+			} else {
+				a.debugLog("Strategy 1 location found but content mismatch. Falling back to search.")
+			}
+		}
+	}
+
+	if !strategy1Valid {
+		targetLine = -1 // Reset
+		a.debugLog("Trying Strategy 2 (content matching)")
+		
 		matchStart := -1
+		// Search for the block of lines
 		for i := 0; i <= len(fileLines)-len(addedLines); i++ {
 			match := true
 			for j := 0; j < len(addedLines); j++ {
@@ -366,114 +375,29 @@ func (a *Applier) createPatch(comment *github.ReviewComment) (string, error) {
 		}
 
 		if matchStart == -1 {
-			a.debugLog("Strategy 2 failed: could not find matching content")
-			return "", fmt.Errorf("could not find the code to replace in current file (looking for %d lines starting with %q)",
+			return -1, 0, fmt.Errorf("could not find the code to replace in current file (looking for %d lines starting with %q)",
 				len(addedLines), addedLines[0])
 		}
 		targetLine = matchStart
 	}
 
-	a.debugLog("Target line for replacement: %d (0-based), which is line %d (1-based)", targetLine, targetLine+1)
-
-	// Verify the content matches at the target position
+	// Final verification (redundant if we just searched, but good for safety)
 	if targetLine >= 0 && targetLine+len(addedLines) <= len(fileLines) {
-		a.debugLog("Verifying content at target position...")
-		a.debugLog("Current file content at target position:")
-		for j := 0; j < len(addedLines) && targetLine+j < len(fileLines); j++ {
-			a.debugLog("  [%d] Current: %q", targetLine+j+1, fileLines[targetLine+j])
-			a.debugLog("  [%d] Expected: %q", targetLine+j+1, addedLines[j])
-		}
-
-		mismatch := false
-		var mismatchLine int
 		for j := 0; j < len(addedLines); j++ {
 			if fileLines[targetLine+j] != addedLines[j] {
-				mismatch = true
-				mismatchLine = targetLine + j + 1
-				a.debugLog("MISMATCH at line %d: got %q, expected %q",
-					mismatchLine, fileLines[targetLine+j], addedLines[j])
-				break
-			}
-		}
-		if mismatch {
-			// Show surrounding context
-			a.debugLog("Showing file context around mismatch:")
-			contextStart := targetLine - 3
-			if contextStart < 0 {
-				contextStart = 0
-			}
-			contextEnd := targetLine + len(addedLines) + 3
-			if contextEnd > len(fileLines) {
-				contextEnd = len(fileLines)
-			}
-			for i := contextStart; i < contextEnd; i++ {
-				marker := "  "
-				if i+1 == mismatchLine {
-					marker = "→ "
+				mismatchLine := targetLine + j + 1
+				diffFile := a.saveMismatchDiff(comment, fileLines, targetLine, addedLines, mismatchLine)
+				if diffFile != "" {
+					return -1, 0, fmt.Errorf("content mismatch at line %d - the code may have changed since the review\nDiagnostic diff saved to: %s", mismatchLine, diffFile)
 				}
-				a.debugLog("%s[%d] %q", marker, i+1, fileLines[i])
+				return -1, 0, fmt.Errorf("content mismatch at line %d - the code may have changed since the review", mismatchLine)
 			}
-
-			// Generate a diagnostic diff file showing the mismatch
-			diffFile := a.saveMismatchDiff(comment, fileLines, targetLine, addedLines, mismatchLine)
-			if diffFile != "" {
-				return "", fmt.Errorf("content mismatch at line %d - the code may have changed since the review\nDiagnostic diff saved to: %s", mismatchLine, diffFile)
-			}
-
-			return "", fmt.Errorf("content mismatch at line %d - the code may have changed since the review", mismatchLine)
 		}
-		a.debugLog("Content verification passed!")
+	} else {
+		return -1, 0, fmt.Errorf("target position %d is out of bounds (file has %d lines)", targetLine, len(fileLines))
 	}
 
-	removeCount := len(addedLines)
-
-	// Get context lines (3 before and after)
-	contextSize := 3
-	startLine := targetLine - contextSize
-	if startLine < 0 {
-		startLine = 0
-	}
-	endLine := targetLine + removeCount + contextSize
-	if endLine > len(fileLines) {
-		endLine = len(fileLines)
-	}
-
-	var patch strings.Builder
-
-	// Write patch header
-	patch.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", comment.Path, comment.Path))
-	patch.WriteString(fmt.Sprintf("--- a/%s\n", comment.Path))
-	patch.WriteString(fmt.Sprintf("+++ b/%s\n", comment.Path))
-
-	// Count lines in the hunk
-	oldLineCount := endLine - startLine
-	suggestionLines := strings.Split(strings.TrimSuffix(comment.SuggestedCode, "\n"), "\n")
-	newLineCount := (endLine - startLine) - removeCount + len(suggestionLines)
-
-	// Write hunk header (1-based line numbers)
-	patch.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", startLine+1, oldLineCount, startLine+1, newLineCount))
-
-	// Write context before
-	for i := startLine; i < targetLine; i++ {
-		patch.WriteString(" " + fileLines[i] + "\n")
-	}
-
-	// Write lines to remove
-	for i := targetLine; i < targetLine+removeCount; i++ {
-		patch.WriteString("-" + fileLines[i] + "\n")
-	}
-
-	// Write suggested lines
-	for _, line := range suggestionLines {
-		patch.WriteString("+" + line + "\n")
-	}
-
-	// Write context after
-	for i := targetLine + removeCount; i < endLine; i++ {
-		patch.WriteString(" " + fileLines[i] + "\n")
-	}
-
-	return patch.String(), nil
+	return targetLine, len(addedLines), nil
 }
 
 // saveMismatchDiff creates a diagnostic diff file showing what was expected vs what was found

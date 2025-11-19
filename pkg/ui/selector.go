@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -27,7 +28,7 @@ type ItemRenderer[T any] interface {
 }
 
 // CustomAction is a function that handles custom actions on items
-type CustomAction[T any] func(item T) error
+type CustomAction[T any] func(item T) (string, error)
 
 // SelectionModel is the tea.Model for interactive selection
 type SelectionModel[T any] struct {
@@ -37,6 +38,13 @@ type SelectionModel[T any] struct {
 	windowSize   tea.WindowSizeMsg
 	customAction CustomAction[T]
 	actionKey    string // Key binding description for custom action (e.g., "ctrl+r resolve")
+	onOpen       CustomAction[T]
+	viewport     viewport.Model
+	showDetail   bool
+	filterFunc   func(T) bool
+	filterActive bool
+	renderer     ItemRenderer[T]
+	showHelp     bool
 }
 
 // Item wraps a generic item for the list model
@@ -60,12 +68,12 @@ func (i listItem[T]) Description() string {
 // SelectFromList creates an interactive selector for a list of items
 // Returns selected items in order they were selected
 func SelectFromList[T any](items []T, renderer ItemRenderer[T]) (T, error) {
-	return SelectFromListWithAction(items, renderer, nil, "")
+	return SelectFromListWithAction(items, renderer, nil, "", nil, nil)
 }
 
 // SelectFromListWithAction creates an interactive selector with a custom action
 // The customAction is triggered by Ctrl+R, and actionKey describes the action in the help text
-func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], customAction CustomAction[T], actionKey string) (T, error) {
+func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], customAction CustomAction[T], actionKey string, onOpen CustomAction[T], filterFunc func(T) bool) (T, error) {
 	// Convert items to list items
 	listItems := make([]list.Item, len(items))
 	for i, item := range items {
@@ -77,6 +85,7 @@ func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], custom
 	l.SetShowStatusBar(true)
 	l.SetShowPagination(true)
 	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
 
 	m := &SelectionModel[T]{
 		list:         l,
@@ -84,6 +93,10 @@ func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], custom
 		result:       make([]T, 0),
 		customAction: customAction,
 		actionKey:    actionKey,
+		onOpen:       onOpen,
+		viewport:     viewport.New(0, 0),
+		filterFunc:   filterFunc,
+		renderer:     renderer,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -102,20 +115,80 @@ func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], custom
 
 // Init initializes the model
 func (m *SelectionModel[T]) Init() tea.Cmd {
-	return nil
+	return tea.Batch(tea.EnterAltScreen)
 }
 
 // Update handles user input
 func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle detail view navigation
+	if m.showDetail {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "esc", "q", "backspace":
+				m.showDetail = false
+				return m, nil
+			}
+		case tea.WindowSizeMsg:
+			m.windowSize = msg
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height
+		}
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// If we are filtering, let the list handle the input
+		if m.list.FilterState() == list.Filtering {
+			break
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "?":
+			m.showHelp = !m.showHelp
+			return m, nil
+		case "h":
+			if m.filterFunc != nil {
+				m.filterActive = !m.filterActive
+				m.updateVisibleItems()
+				return m, nil
+			}
+		case "o":
+			if m.onOpen != nil {
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					msg, err := m.onOpen(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					if msg != "" {
+						return m, m.list.NewStatusMessage(msg)
+					}
+				}
+			}
+			return m, nil
 		case "enter":
 			selected := m.list.SelectedItem()
 			if selected != nil {
 				item := selected.(listItem[T])
+				if m.onOpen != nil {
+					// Browse mode: Show Detail
+					m.showDetail = true
+					content := item.item.Preview(item.value)
+					// Wrap content to viewport width
+					wrappedContent := WrapText(content, m.viewport.Width)
+					m.viewport.SetContent(wrappedContent)
+					// Reset viewport position
+					m.viewport.GotoTop()
+					return m, nil
+				}
+				// Apply mode: Select and Return
 				m.result = append(m.result, item.value)
 			}
 			return m, tea.Quit
@@ -135,15 +208,40 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := m.list.SelectedItem()
 				if selected != nil {
 					item := selected.(listItem[T])
-					_ = m.customAction(item.value)
+					msg, err := m.customAction(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					// Force update of the item in the list to reflect changes
+					m.list.SetItem(m.list.Index(), item)
+					
+					if msg != "" {
+						return m, m.list.NewStatusMessage(msg)
+					}
 				}
 			}
 			return m, nil
+		case "right", "l":
+			// Also allow right arrow or 'l' to enter detail view if in browse mode
+			if m.onOpen != nil {
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					m.showDetail = true
+					content := item.item.Preview(item.value)
+					wrappedContent := WrapText(content, m.viewport.Width)
+					m.viewport.SetContent(wrappedContent)
+					m.viewport.GotoTop()
+					return m, nil
+				}
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.windowSize = msg
 		h, v := lipgloss.NewStyle().GetFrameSize()
 		m.list.SetSize(msg.Width-h, msg.Height-v)
+		m.viewport.Width = msg.Width
+		m.viewport.Height = msg.Height
 	}
 
 	var cmd tea.Cmd
@@ -173,42 +271,56 @@ func (m *SelectionModel[T]) editInEditor(filePath string, lineNum int) error {
 	return cmd.Run()
 }
 
+// updateVisibleItems updates the list items based on the current filter state
+func (m *SelectionModel[T]) updateVisibleItems() {
+	var visible []list.Item
+	for _, item := range m.items {
+		if !m.filterActive || m.filterFunc(item) {
+			visible = append(visible, listItem[T]{value: item, item: m.renderer})
+		}
+	}
+	m.list.SetItems(visible)
+}
+
 // View renders the model
 func (m *SelectionModel[T]) View() string {
+	if m.showDetail {
+		return m.viewport.View()
+	}
+
 	if m.list.SelectedItem() == nil {
 		return ""
 	}
 
-	selected := m.list.SelectedItem().(listItem[T])
-	preview := selected.item.Preview(selected.value)
-
-	// Calculate preview width based on terminal width
-	// Leave space for the list (roughly 40 chars) and some padding
-	previewWidth := m.windowSize.Width - 45
-	if previewWidth < 30 {
-		previewWidth = 30
-	}
-
-	// Wrap preview text to the calculated width
-	wrappedPreview := WrapText(preview, previewWidth)
-
-	// Styling
-	previewStyle := lipgloss.NewStyle().
-		Padding(1, 2).
-		Foreground(lipgloss.Color("248")).
-		Width(previewWidth)
-
-	previewBox := previewStyle.Render(wrappedPreview)
-
 	// Help text
 	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")).
+		Foreground(lipgloss.Color("252")). // Brighter gray for better visibility
 		Italic(true)
-	helpText := "↑/↓ navigate  •  enter select  •  ctrl+e edit"
-	if m.customAction != nil && m.actionKey != "" {
-		helpText += "  •  " + m.actionKey
+
+	var helpText string
+	if !m.showHelp {
+		// Compact view
+		helpText = "↑/↓ navigate  •  enter details  •  q quit  •  ? more"
+	} else {
+		// Expanded view
+		helpText = "↑/↓ navigate  •  enter details  •  q quit  •  ? less\n"
+		
+		var extraCommands []string
+		if m.onOpen != nil {
+			extraCommands = append(extraCommands, "o open browser")
+		}
+		extraCommands = append(extraCommands, "ctrl+e edit")
+		if m.filterFunc != nil {
+			extraCommands = append(extraCommands, "h toggle resolved")
+		}
+		if m.customAction != nil && m.actionKey != "" {
+			extraCommands = append(extraCommands, m.actionKey)
+		}
+		extraCommands = append(extraCommands, "/ search")
+		
+		helpText += strings.Join(extraCommands, "  •  ")
 	}
-	helpText += "  •  / search  •  q quit"
+	
 	help := helpStyle.Render(helpText)
 
 	// Top section with title
@@ -224,17 +336,10 @@ func (m *SelectionModel[T]) View() string {
 		m.list.View(),
 	)
 
-	// Side-by-side: list on left, preview on right
-	mainContent := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		listSection,
-		previewBox,
-	)
-
 	// Bottom: help text
 	content := lipgloss.JoinVertical(
 		lipgloss.Top,
-		mainContent,
+		listSection,
 		help,
 	)
 
@@ -267,27 +372,40 @@ func (d itemDelegate[T]) Render(w io.Writer, m list.Model, index int, item list.
 
 	var s strings.Builder
 
-	// Cursor
-	cursor := "  "
 	if isSelected {
-		cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("▶ ")
-	}
-	s.WriteString(cursor)
+		// Cursor
+		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("▶ "))
 
-	// Title styling
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("51")).
-		Bold(isSelected)
-	if !isSelected {
-		titleStyle = titleStyle.Foreground(lipgloss.Color("250"))
-	}
-	s.WriteString(titleStyle.Render(title))
+		// Selected Item Style
+		// We use a background color to make it prominent
+		selectedBg := lipgloss.Color("57")  // Indigo/Purple
+		selectedFg := lipgloss.Color("255") // White
 
-	// Description styling
-	if desc != "" {
-		s.WriteString(" ")
-		descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-		s.WriteString(descStyle.Render(desc))
+		titleStyle := lipgloss.NewStyle().
+			Foreground(selectedFg).
+			Background(selectedBg).
+			Bold(true)
+
+		s.WriteString(titleStyle.Render(title))
+
+		if desc != "" {
+			descStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")). // Slightly dimmer than white
+				Background(selectedBg)
+			s.WriteString(descStyle.Render(" " + desc))
+		}
+	} else {
+		// Unselected
+		s.WriteString("  ")
+
+		titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		s.WriteString(titleStyle.Render(title))
+
+		if desc != "" {
+			s.WriteString(" ")
+			descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+			s.WriteString(descStyle.Render(desc))
+		}
 	}
 
 	_, _ = fmt.Fprint(w, s.String())

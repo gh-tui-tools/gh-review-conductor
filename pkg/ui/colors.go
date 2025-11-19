@@ -217,9 +217,9 @@ func NewSuggestionListStyle(authorName string, isResolved bool) *SuggestionListS
 	return NewReviewListStyle(authorName, isResolved)
 }
 
-// FormatCommentTitle returns a formatted title for comment list display: "@author • ID".
+// FormatCommentTitle returns a formatted title for comment list display: "@author".
 func (rls *ReviewListStyle) FormatCommentTitle(commentID int64) string {
-	return fmt.Sprintf("%s • %d", rls.Author.Format(false), commentID)
+	return rls.Author.Format(false)
 }
 
 // FormatCommentDescription returns a formatted description for comment list: "file:line [emoji status]".
