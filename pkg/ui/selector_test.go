@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -136,6 +137,74 @@ func TestCustomActionType(t *testing.T) {
 	}
 	if result != "non-positive" {
 		t.Errorf("CustomAction result = %q, want %q", result, "non-positive")
+	}
+}
+
+func TestAgentFinishedMsgType(t *testing.T) {
+	// This test verifies the agentFinishedMsg type works as expected
+	msg := agentFinishedMsg{err: nil}
+	if msg.err != nil {
+		t.Errorf("agentFinishedMsg with nil error should have nil err")
+	}
+
+	expectedErr := "test error"
+	msg = agentFinishedMsg{err: errors.New(expectedErr)}
+	if msg.err == nil {
+		t.Errorf("agentFinishedMsg with error should have non-nil err")
+	}
+	if msg.err.Error() != expectedErr {
+		t.Errorf("agentFinishedMsg error = %q, want %q", msg.err.Error(), expectedErr)
+	}
+}
+
+func TestLaunchAgentPrefix(t *testing.T) {
+	// Test that LAUNCH_AGENT: prefix is correctly parsed
+	tests := []struct {
+		name           string
+		input          string
+		shouldLaunch   bool
+		expectedPrompt string
+	}{
+		{
+			name:           "valid launch agent prefix",
+			input:          "LAUNCH_AGENT:Review comment on file.go:42\n\nComment body",
+			shouldLaunch:   true,
+			expectedPrompt: "Review comment on file.go:42\n\nComment body",
+		},
+		{
+			name:           "no prefix",
+			input:          "Some other result",
+			shouldLaunch:   false,
+			expectedPrompt: "",
+		},
+		{
+			name:           "empty prompt after prefix",
+			input:          "LAUNCH_AGENT:",
+			shouldLaunch:   true,
+			expectedPrompt: "",
+		},
+		{
+			name:           "similar but not matching prefix",
+			input:          "LAUNCH_AGENT_OTHER:something",
+			shouldLaunch:   false,
+			expectedPrompt: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := "LAUNCH_AGENT:"
+			hasPrefix := len(tt.input) >= len(prefix) && tt.input[:len(prefix)] == prefix
+			if hasPrefix != tt.shouldLaunch {
+				t.Errorf("HasPrefix(%q, %q) = %v, want %v", tt.input, prefix, hasPrefix, tt.shouldLaunch)
+			}
+			if hasPrefix {
+				prompt := tt.input[len(prefix):]
+				if prompt != tt.expectedPrompt {
+					t.Errorf("Prompt = %q, want %q", prompt, tt.expectedPrompt)
+				}
+			}
+		})
 	}
 }
 

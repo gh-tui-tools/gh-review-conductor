@@ -240,6 +240,18 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			return buildCommentTree(freshComments), nil
 		}
 
+		// Agent action - launch coding agent with comment details
+		agentAction := func(item BrowseItem) (string, error) {
+			if item.Type == "file" {
+				return "", fmt.Errorf("cannot launch agent on file header")
+			}
+			prompt := fmt.Sprintf("Review comment on %s:%d\n\n%s",
+				item.Comment.Path,
+				item.Comment.Line,
+				item.Comment.Body)
+			return "LAUNCH_AGENT:" + prompt, nil
+		}
+
 		selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{
 			Items:    browseItems,
 			Renderer: renderer,
@@ -271,6 +283,10 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			QuoteContextPrepare:  editorPrepareC,
 			QuoteContextComplete: editorCompleteC,
 			QuoteContextKey:      "C quote+context",
+
+			// a key: launch coding agent
+			AgentAction: agentAction,
+			AgentKey:    "a agent",
 		})
 		if err != nil {
 			if errors.Is(err, ui.ErrNoSelection) {

@@ -55,6 +55,11 @@ type refreshFinishedMsg struct {
 	err   error
 }
 
+// agentFinishedMsg is sent when the coding agent process completes
+type agentFinishedMsg struct {
+	err error
+}
+
 var ErrNoSelection = errors.New("no selection made")
 
 // SelectorOptions configures the interactive selector.
@@ -263,6 +268,14 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorFinished(finished)
 	}
 
+	// Handle agent completion
+	if finished, ok := msg.(agentFinishedMsg); ok {
+		if finished.err != nil {
+			return m, m.list.NewStatusMessage(Colorize(ColorRed, "agent error: "+finished.err.Error()))
+		}
+		return m, nil
+	}
+
 	// Handle deferred detail loading
 	if _, ok := msg.(loadDetailMsg); ok {
 		m.loadingDetail = false
@@ -410,6 +423,27 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 						}
 						return m, m.startEditorForAction(item.value, 4, initialContent)
+					}
+				}
+				return m, nil
+			case "a":
+				// Launch coding agent from detail view
+				if m.opts.AgentAction != nil {
+					selected := m.list.SelectedItem()
+					if selected != nil {
+						item := selected.(listItem[T])
+						m.showDetail = false
+						result, err := m.opts.AgentAction(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						if strings.HasPrefix(result, "LAUNCH_AGENT:") {
+							prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
+							return m, m.launchAgent(prompt)
+						}
+						if result != "" {
+							return m, m.list.NewStatusMessage(result)
+						}
 					}
 				}
 				return m, nil
@@ -643,6 +677,27 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "a":
+			// Launch coding agent
+			if m.opts.AgentAction != nil {
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					result, err := m.opts.AgentAction(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					if strings.HasPrefix(result, "LAUNCH_AGENT:") {
+						prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
+						return m, m.launchAgent(prompt)
+					}
+					m.list.SetItem(m.list.Index(), item)
+					if result != "" {
+						return m, m.list.NewStatusMessage(result)
+					}
+				}
+			}
+			return m, nil
 		case "right", "l":
 			// Also allow right arrow or 'l' to enter detail view if in browse mode
 			if m.opts.OnOpen != nil {
@@ -809,6 +864,20 @@ func SanitizeEditorContent(raw string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+// launchAgent starts the configured coding agent with the given prompt
+func (m *SelectionModel[T]) launchAgent(prompt string) tea.Cmd {
+	agent := os.Getenv("GH_PRREVIEW_AGENT")
+	if agent == "" {
+		agent = "claude"
+	}
+	parts := strings.Fields(agent)
+	args := append(parts[1:], prompt)
+	c := exec.Command(parts[0], args...)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return agentFinishedMsg{err: err}
+	})
+}
+
 // updateVisibleItems updates the list items based on the current filter state
 func (m *SelectionModel[T]) updateVisibleItems() {
 	var visible []list.Item
@@ -889,7 +958,7 @@ func (m *SelectionModel[T]) View() string {
 		// Dynamic help based on resolved state
 		resolveKey := m.getResolveActionKey()
 		resolveKeySecond := m.getResolveActionKeySecond()
-		footer := footerStyle.Render(fmt.Sprintf("esc/q back • ^F/^B pgdn/up • o open • %s • %s • Q quote • C quote+context", resolveKey, resolveKeySecond))
+		footer := footerStyle.Render(fmt.Sprintf("esc/q back • ^F/^B pgdn/up • o open • %s • %s • Q quote • C quote+context • a agent", resolveKey, resolveKeySecond))
 
 		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
 	}
@@ -911,7 +980,7 @@ func (m *SelectionModel[T]) View() string {
 		// Compact view with dynamic resolve/unresolve keys
 		resolveKey := m.getResolveActionKey()
 		resolveKeySecond := m.getResolveActionKeySecond()
-		helpText = fmt.Sprintf("↑/↓ navigate • enter details • o open • %s • %s • Q quote • C quote+context • i refresh • h show/hide resolved • / search • q quit • ? help", resolveKey, resolveKeySecond)
+		helpText = fmt.Sprintf("↑/↓ navigate • enter details • o open • %s • %s • Q quote • C quote+context • a agent • i refresh • h show/hide resolved • / search • q quit • ? help", resolveKey, resolveKeySecond)
 	} else {
 		helpText = ""
 	}
@@ -1082,6 +1151,11 @@ func (m *SelectionModel[T]) renderHelpOverlay() string {
 
 	if m.opts.QuoteContextPrepare != nil && m.opts.QuoteContextKey != "" {
 		key, desc := splitActionKey(m.opts.QuoteContextKey)
+		entries = append(entries, entry{key, desc})
+	}
+
+	if m.opts.AgentAction != nil && m.opts.AgentKey != "" {
+		key, desc := splitActionKey(m.opts.AgentKey)
 		entries = append(entries, entry{key, desc})
 	}
 
