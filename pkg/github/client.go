@@ -739,7 +739,7 @@ func (c *Client) ReplyToReviewComment(prNumber int, commentID int64, body string
 		return nil, fmt.Errorf("failed to close temporary file: %w", err)
 	}
 
-	stdOut, stdErr, err := gh.Exec("api", endpoint, "-X", "POST", "-f", fmt.Sprintf("body=@%s", tmpFile.Name()))
+	stdOut, stdErr, err := gh.Exec("api", endpoint, "-X", "POST", "-F", fmt.Sprintf("body=@%s", tmpFile.Name()))
 	if err != nil {
 		c.debugLog("Failed to post review comment reply: %v", err)
 		if stdErr.Len() > 0 {
