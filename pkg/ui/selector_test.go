@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -202,6 +203,78 @@ func TestLaunchAgentPrefix(t *testing.T) {
 				prompt := tt.input[len(prefix):]
 				if prompt != tt.expectedPrompt {
 					t.Errorf("Prompt = %q, want %q", prompt, tt.expectedPrompt)
+				}
+			}
+		})
+	}
+}
+
+func TestEditFilePrefix(t *testing.T) {
+	// Test that EDIT_FILE: prefix is correctly parsed
+	tests := []struct {
+		name         string
+		input        string
+		shouldEdit   bool
+		expectedPath string
+		expectedLine int
+	}{
+		{
+			name:         "valid edit file prefix",
+			input:        "EDIT_FILE:cmd/browse.go:42",
+			shouldEdit:   true,
+			expectedPath: "cmd/browse.go",
+			expectedLine: 42,
+		},
+		{
+			name:         "no prefix",
+			input:        "Some other result",
+			shouldEdit:   false,
+			expectedPath: "",
+			expectedLine: 0,
+		},
+		{
+			name:         "path with colons",
+			input:        "EDIT_FILE:/home/user/file.go:100",
+			shouldEdit:   true,
+			expectedPath: "/home/user/file.go",
+			expectedLine: 100,
+		},
+		{
+			name:         "line number zero",
+			input:        "EDIT_FILE:file.go:0",
+			shouldEdit:   true,
+			expectedPath: "file.go",
+			expectedLine: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := "EDIT_FILE:"
+			hasPrefix := len(tt.input) >= len(prefix) && tt.input[:len(prefix)] == prefix
+			if hasPrefix != tt.shouldEdit {
+				t.Errorf("HasPrefix(%q, %q) = %v, want %v", tt.input, prefix, hasPrefix, tt.shouldEdit)
+			}
+			if hasPrefix {
+				remainder := tt.input[len(prefix):]
+				// Split on last colon to get path and line
+				lastColon := -1
+				for i := len(remainder) - 1; i >= 0; i-- {
+					if remainder[i] == ':' {
+						lastColon = i
+						break
+					}
+				}
+				if lastColon > 0 {
+					path := remainder[:lastColon]
+					var lineNum int
+					fmt.Sscanf(remainder[lastColon+1:], "%d", &lineNum)
+					if path != tt.expectedPath {
+						t.Errorf("Path = %q, want %q", path, tt.expectedPath)
+					}
+					if lineNum != tt.expectedLine {
+						t.Errorf("Line = %d, want %d", lineNum, tt.expectedLine)
+					}
 				}
 			}
 		})
