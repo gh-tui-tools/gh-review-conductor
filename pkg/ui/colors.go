@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -49,6 +50,28 @@ func Colorize(color, text string) string {
 		return text
 	}
 	return color + text + ColorReset
+}
+
+// FormatDiffWithHeaders prepends git-style --- a/ and +++ b/ headers to a diff hunk.
+// This is useful for displaying diff context with file path information.
+func FormatDiffWithHeaders(diffHunk, path string) string {
+	if path == "" {
+		return diffHunk
+	}
+	return fmt.Sprintf("--- a/%s\n+++ b/%s\n%s", path, path, diffHunk)
+}
+
+// TruncateDiff limits a diff to maxLines, appending "..." if truncated.
+// If maxLines is 0 or negative, no truncation is applied.
+func TruncateDiff(diff string, maxLines int) string {
+	if maxLines <= 0 {
+		return diff
+	}
+	lines := strings.Split(diff, "\n")
+	if len(lines) <= maxLines {
+		return diff
+	}
+	return strings.Join(lines[:maxLines], "\n") + "\n..."
 }
 
 // ColorizeDiff applies syntax highlighting to diff hunks
@@ -223,7 +246,7 @@ func NewStatusStyle(isResolved bool) *StatusStyle {
 	} else {
 		style.Label = "unresolved"
 		style.Color = ColorYellow
-		style.Emoji = "⚠️"
+		style.Emoji = "⚠️ " // Extra space after ⚠️ for better visual spacing
 	}
 
 	return style
@@ -307,4 +330,50 @@ func (rls *ReviewListStyle) FormatSuggestionDescription(hasSuggestion bool, isOu
 	parts = append(parts, rls.Status.Format(true))
 
 	return strings.Join(parts, " ")
+}
+
+// FormatRelativeTime formats a time as a human-readable relative string
+// like "5 minutes ago", "2 hours ago", "3 days ago", etc.
+func FormatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+
+	now := time.Now()
+	diff := now.Sub(t)
+
+	switch {
+	case diff < time.Minute:
+		return "just now"
+	case diff < time.Hour:
+		mins := int(diff.Minutes())
+		if mins == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", mins)
+	case diff < 24*time.Hour:
+		hours := int(diff.Hours())
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	case diff < 30*24*time.Hour:
+		days := int(diff.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	case diff < 365*24*time.Hour:
+		months := int(diff.Hours() / 24 / 30)
+		if months == 1 {
+			return "1 month ago"
+		}
+		return fmt.Sprintf("%d months ago", months)
+	default:
+		years := int(diff.Hours() / 24 / 365)
+		if years == 1 {
+			return "1 year ago"
+		}
+		return fmt.Sprintf("%d years ago", years)
+	}
 }

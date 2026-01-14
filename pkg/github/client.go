@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/chmouel/gh-prreview/pkg/diffposition"
 	"github.com/chmouel/gh-prreview/pkg/parser"
@@ -36,15 +37,17 @@ type ReviewComment struct {
 	DiffSide          diffposition.DiffSide
 	SubjectType       string
 	HTMLURL           string
+	CreatedAt         time.Time
 	IsOutdated        bool
 	ThreadComments    []ThreadComment
 }
 
 type ThreadComment struct {
-	ID      int64
-	Body    string
-	Author  string
-	HTMLURL string
+	ID        int64
+	Body      string
+	Author    string
+	HTMLURL   string
+	CreatedAt time.Time
 }
 
 // PullRequest represents a GitHub pull request with display-relevant fields
@@ -120,6 +123,7 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 									databaseId
 									body
 									url
+									createdAt
 									author {
 										login
 									}
@@ -152,9 +156,10 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 							IsResolved bool   `json:"isResolved"`
 							Comments   struct {
 								Nodes []struct {
-									DatabaseID int64  `json:"databaseId"`
-									Body       string `json:"body"`
-									URL        string `json:"url"`
+									DatabaseID int64     `json:"databaseId"`
+									Body       string    `json:"body"`
+									URL        string    `json:"url"`
+									CreatedAt  time.Time `json:"createdAt"`
 									Author     struct {
 										Login string `json:"login"`
 									} `json:"author"`
@@ -195,10 +200,11 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 			c.debugLog("  Comment %d: ID=%d, author=%s, body_len=%d",
 				j, comment.DatabaseID, comment.Author.Login, len(comment.Body))
 			threadComments = append(threadComments, ThreadComment{
-				ID:      comment.DatabaseID,
-				Body:    comment.Body,
-				Author:  comment.Author.Login,
-				HTMLURL: comment.URL,
+				ID:        comment.DatabaseID,
+				Body:      comment.Body,
+				Author:    comment.Author.Login,
+				HTMLURL:   comment.URL,
+				CreatedAt: comment.CreatedAt,
 			})
 		}
 
@@ -442,9 +448,10 @@ func (c *Client) FetchReviewComments(prNumber int) ([]*ReviewComment, error) {
 		User      struct {
 			Login string `json:"login"`
 		} `json:"user"`
-		OriginalLine      int    `json:"original_line"`
-		OriginalStartLine int    `json:"original_start_line"`
-		SubjectType       string `json:"subject_type"`
+		OriginalLine      int       `json:"original_line"`
+		OriginalStartLine int       `json:"original_start_line"`
+		SubjectType       string    `json:"subject_type"`
+		CreatedAt         time.Time `json:"created_at"`
 	}
 
 	if err := json.Unmarshal(stdOut.Bytes(), &rawComments); err != nil {
@@ -535,6 +542,7 @@ func (c *Client) FetchReviewComments(prNumber int) ([]*ReviewComment, error) {
 			OriginalEndLine:   originalEndLine,
 			SubjectType:       subjectType,
 			HTMLURL:           raw.HTMLURL,
+			CreatedAt:         raw.CreatedAt,
 			IsOutdated:        isOutdated,
 			ThreadComments:    threadComments,
 		}
@@ -749,10 +757,11 @@ func (c *Client) ReplyToReviewComment(prNumber int, commentID int64, body string
 	}
 
 	var response struct {
-		ID      int64  `json:"id"`
-		Body    string `json:"body"`
-		HTMLURL string `json:"html_url"`
-		User    struct {
+		ID        int64     `json:"id"`
+		Body      string    `json:"body"`
+		HTMLURL   string    `json:"html_url"`
+		CreatedAt time.Time `json:"created_at"`
+		User      struct {
 			Login string `json:"login"`
 		} `json:"user"`
 	}
@@ -767,9 +776,10 @@ func (c *Client) ReplyToReviewComment(prNumber int, commentID int64, body string
 	c.debugLog("Reply created with ID %d", response.ID)
 
 	return &ThreadComment{
-		ID:      response.ID,
-		Body:    response.Body,
-		Author:  response.User.Login,
-		HTMLURL: response.HTMLURL,
+		ID:        response.ID,
+		Body:      response.Body,
+		Author:    response.User.Login,
+		HTMLURL:   response.HTMLURL,
+		CreatedAt: response.CreatedAt,
 	}, nil
 }

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -181,7 +180,8 @@ func promptForCommentBody() (string, error) {
 		_ = os.Remove(tmpFile.Name())
 	}()
 
-	if _, err := tmpFile.WriteString(template); err != nil {
+	content := template
+	if _, err := tmpFile.WriteString(content); err != nil {
 		closeErr := tmpFile.Close()
 		return "", fmt.Errorf("failed to write template: %w (and closing file: %v)", err, closeErr)
 	}
@@ -208,38 +208,22 @@ func promptForCommentBody() (string, error) {
 		return "", fmt.Errorf("editor exited with error: %w", err)
 	}
 
-	content, err := os.ReadFile(tmpFile.Name())
+	result, err := os.ReadFile(tmpFile.Name())
 	if err != nil {
 		return "", fmt.Errorf("failed to read editor content: %w", err)
 	}
 
-	return sanitizeComment(string(content), true)
+	return sanitizeComment(string(result), true)
 }
 
 func sanitizeComment(raw string, stripCommentLines bool) (string, error) {
-	var builder strings.Builder
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	firstLine := true
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if stripCommentLines && strings.HasPrefix(line, "#") {
-			continue
-		}
-		if firstLine {
-			builder.WriteString(line)
-			firstLine = false
-		} else {
-			builder.WriteRune('\n')
-			builder.WriteString(line)
-		}
+	var body string
+	if stripCommentLines {
+		body = ui.SanitizeEditorContent(raw)
+	} else {
+		body = strings.TrimSpace(raw)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to parse comment body: %w", err)
-	}
-
-	body := strings.TrimSpace(builder.String())
 	if body == "" {
 		return "", errors.New("comment body cannot be empty")
 	}

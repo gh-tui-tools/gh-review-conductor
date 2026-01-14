@@ -726,3 +726,16 @@ func (d itemDelegate[T]) Render(w io.Writer, m list.Model, index int, item list.
 
 	_, _ = fmt.Fprint(w, s.String())
 }
+
+// SanitizeEditorContent strips lines starting with # and trims whitespace.
+// This is used for processing content from editor-based input where # lines
+// are treated as comments (similar to git commit messages).
+func SanitizeEditorContent(raw string) string {
+	var lines []string
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(line, "#") {
+			lines = append(lines, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
