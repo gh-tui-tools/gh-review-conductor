@@ -447,6 +447,31 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
+			case "e":
+				// Edit file from detail view
+				if m.opts.EditAction != nil {
+					selected := m.list.SelectedItem()
+					if selected != nil {
+						item := selected.(listItem[T])
+						m.showDetail = false
+						result, err := m.opts.EditAction(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						if strings.HasPrefix(result, "EDIT_FILE:") {
+							parts := strings.SplitN(strings.TrimPrefix(result, "EDIT_FILE:"), ":", 2)
+							if len(parts) == 2 {
+								lineNum := 0
+								fmt.Sscanf(parts[1], "%d", &lineNum)
+								return m, m.editInEditor(parts[0], lineNum)
+							}
+						}
+						if result != "" {
+							return m, m.list.NewStatusMessage(result)
+						}
+					}
+				}
+				return m, nil
 			case "o":
 				// Open in browser from detail view
 				if m.opts.OnOpen != nil {
@@ -690,6 +715,31 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if strings.HasPrefix(result, "LAUNCH_AGENT:") {
 						prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
 						return m, m.launchAgent(prompt)
+					}
+					m.list.SetItem(m.list.Index(), item)
+					if result != "" {
+						return m, m.list.NewStatusMessage(result)
+					}
+				}
+			}
+			return m, nil
+		case "e":
+			// Edit file action
+			if m.opts.EditAction != nil {
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					result, err := m.opts.EditAction(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					if strings.HasPrefix(result, "EDIT_FILE:") {
+						parts := strings.SplitN(strings.TrimPrefix(result, "EDIT_FILE:"), ":", 2)
+						if len(parts) == 2 {
+							lineNum := 0
+							fmt.Sscanf(parts[1], "%d", &lineNum)
+							return m, m.editInEditor(parts[0], lineNum)
+						}
 					}
 					m.list.SetItem(m.list.Index(), item)
 					if result != "" {
@@ -958,7 +1008,7 @@ func (m *SelectionModel[T]) View() string {
 		// Dynamic help based on resolved state
 		resolveKey := m.getResolveActionKey()
 		resolveKeySecond := m.getResolveActionKeySecond()
-		footer := footerStyle.Render(fmt.Sprintf("esc/q back • ^F/^B pgdn/up • o open • %s • %s • Q quote • C quote+context • a agent", resolveKey, resolveKeySecond))
+		footer := footerStyle.Render(fmt.Sprintf("esc/q back • ^F/^B pgdn/up • o open • %s • %s • Q quote • C quote+context • a agent • e edit", resolveKey, resolveKeySecond))
 
 		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
 	}
@@ -980,7 +1030,7 @@ func (m *SelectionModel[T]) View() string {
 		// Compact view with dynamic resolve/unresolve keys
 		resolveKey := m.getResolveActionKey()
 		resolveKeySecond := m.getResolveActionKeySecond()
-		helpText = fmt.Sprintf("↑/↓ navigate • enter details • o open • %s • %s • Q quote • C quote+context • a agent • i refresh • h show/hide resolved • / search • q quit • ? help", resolveKey, resolveKeySecond)
+		helpText = fmt.Sprintf("↑/↓ navigate • enter details • o open • %s • %s • Q quote • C quote+context • a agent • e edit • i refresh • h show/hide resolved • / search • q quit • ? help", resolveKey, resolveKeySecond)
 	} else {
 		helpText = ""
 	}
@@ -1156,6 +1206,11 @@ func (m *SelectionModel[T]) renderHelpOverlay() string {
 
 	if m.opts.AgentAction != nil && m.opts.AgentKey != "" {
 		key, desc := splitActionKey(m.opts.AgentKey)
+		entries = append(entries, entry{key, desc})
+	}
+
+	if m.opts.EditAction != nil && m.opts.EditKey != "" {
+		key, desc := splitActionKey(m.opts.EditKey)
 		entries = append(entries, entry{key, desc})
 	}
 

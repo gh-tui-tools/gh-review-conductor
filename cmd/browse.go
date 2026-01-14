@@ -252,6 +252,14 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			return "LAUNCH_AGENT:" + prompt, nil
 		}
 
+		// Edit action - open file in editor at comment line
+		editAction := func(item BrowseItem) (string, error) {
+			if item.Type == "file" {
+				return "", fmt.Errorf("cannot edit file header")
+			}
+			return fmt.Sprintf("EDIT_FILE:%s:%d", item.Comment.Path, item.Comment.Line), nil
+		}
+
 		selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{
 			Items:    browseItems,
 			Renderer: renderer,
@@ -287,6 +295,10 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			// a key: launch coding agent
 			AgentAction: agentAction,
 			AgentKey:    "a agent",
+
+			// e key: edit file
+			EditAction: editAction,
+			EditKey:    "e edit",
 		})
 		if err != nil {
 			if errors.Is(err, ui.ErrNoSelection) {
