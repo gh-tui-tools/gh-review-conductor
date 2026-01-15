@@ -41,6 +41,11 @@ type EditorPreparer[T any] func(item T) (string, error)
 // EditorCompleter is called with the editor content to complete the action
 type EditorCompleter[T any] func(item T, editorContent string) (string, error)
 
+// editorFinishedMsg is sent when an editor process completes
+type editorFinishedMsg struct {
+	err error
+}
+
 // loadDetailMsg triggers the actual detail loading after showing loading state
 type loadDetailMsg struct{}
 
@@ -112,6 +117,14 @@ type SelectionModel[T any] struct {
 
 	// Runtime state for refresh
 	refreshing bool
+
+	// State for pending editor operation
+	pendingEditorItem    T
+	pendingEditorTmpFile string
+	pendingEditorAction  int // 2 = R/U, 3 = Q, 4 = C
+
+	// Confirmation message that persists until user dismisses it
+	confirmationMessage string
 
 	// Loading state for detail view
 	loadingDetail bool
@@ -245,6 +258,11 @@ func (m *SelectionModel[T]) Init() tea.Cmd {
 
 // Update handles user input
 func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle editor completion
+	if finished, ok := msg.(editorFinishedMsg); ok {
+		return m.handleEditorFinished(finished)
+	}
+
 	// Handle deferred detail loading
 	if _, ok := msg.(loadDetailMsg); ok {
 		m.loadingDetail = false
@@ -300,6 +318,19 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle confirmation message dismissal - any key dismisses it
+	if m.confirmationMessage != "" {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			m.confirmationMessage = ""
+			return m, nil
+		}
+		// Handle window resize while showing confirmation
+		if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+			m.windowSize = wsm
+		}
+		return m, nil
+	}
+
 	// Handle detail view navigation
 	if m.showDetail {
 		switch msg := msg.(type) {
@@ -315,6 +346,88 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+b":
 				// Page up in detail view
 				m.viewport.ViewUp()
+				return m, nil
+			case "r", "u":
+				// Execute resolve action from detail view (r=resolve, u=unresolve - both toggle)
+				if m.opts.ResolveAction != nil {
+					selected := m.list.SelectedItem()
+					if selected != nil {
+						item := selected.(listItem[T])
+						statusMsg, err := m.opts.ResolveAction(item.value)
+						m.showDetail = false
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						m.list.SetItem(m.list.Index(), item)
+						if statusMsg != "" {
+							return m, m.list.NewStatusMessage(statusMsg)
+						}
+					}
+				}
+				return m, nil
+			case "R", "U":
+				// Execute resolve+comment action from detail view
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					m.showDetail = false
+					// Use editor action if available
+					if m.opts.ResolveCommentPrepare != nil {
+						initialContent, err := m.opts.ResolveCommentPrepare(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						return m, m.startEditorForAction(item.value, 2, initialContent)
+					}
+				}
+				return m, nil
+			case "Q":
+				// Execute quote action from detail view
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					m.showDetail = false
+					// Use editor action if available
+					if m.opts.QuotePrepare != nil {
+						initialContent, err := m.opts.QuotePrepare(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						return m, m.startEditorForAction(item.value, 3, initialContent)
+					}
+				}
+				return m, nil
+			case "C":
+				// Execute quote+context action from detail view
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					m.showDetail = false
+					// Use editor action if available
+					if m.opts.QuoteContextPrepare != nil {
+						initialContent, err := m.opts.QuoteContextPrepare(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						return m, m.startEditorForAction(item.value, 4, initialContent)
+					}
+				}
+				return m, nil
+			case "o":
+				// Open in browser from detail view
+				if m.opts.OnOpen != nil {
+					selected := m.list.SelectedItem()
+					if selected != nil {
+						item := selected.(listItem[T])
+						statusMsg, err := m.opts.OnOpen(item.value)
+						if err != nil {
+							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+						}
+						if statusMsg != "" {
+							return m, m.list.NewStatusMessage(statusMsg)
+						}
+					}
+				}
 				return m, nil
 			}
 		case tea.WindowSizeMsg:
@@ -462,12 +575,12 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if selected != nil {
 				item := selected.(listItem[T])
 				if editPath := item.item.EditPath(item.value); editPath != "" {
-					_ = m.editInEditor(editPath, item.item.EditLine(item.value))
+					return m, m.editInEditor(editPath, item.item.EditLine(item.value))
 				}
 			}
 			return m, nil
 		case "r", "u":
-			// Resolve/unresolve action
+			// Resolve/unresolve action (both toggle)
 			if m.opts.ResolveAction != nil {
 				selected := m.list.SelectedItem()
 				if selected != nil {
@@ -482,6 +595,51 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg != "" {
 						return m, m.list.NewStatusMessage(msg)
 					}
+				}
+			}
+			return m, nil
+		case "R", "U":
+			// Resolve+comment action via editor
+			selected := m.list.SelectedItem()
+			if selected != nil {
+				item := selected.(listItem[T])
+				// Use editor action if available
+				if m.opts.ResolveCommentPrepare != nil {
+					initialContent, err := m.opts.ResolveCommentPrepare(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					return m, m.startEditorForAction(item.value, 2, initialContent)
+				}
+			}
+			return m, nil
+		case "Q":
+			// Quote reply action via editor
+			selected := m.list.SelectedItem()
+			if selected != nil {
+				item := selected.(listItem[T])
+				// Use editor action if available
+				if m.opts.QuotePrepare != nil {
+					initialContent, err := m.opts.QuotePrepare(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					return m, m.startEditorForAction(item.value, 3, initialContent)
+				}
+			}
+			return m, nil
+		case "C":
+			// Quote+context action via editor
+			selected := m.list.SelectedItem()
+			if selected != nil {
+				item := selected.(listItem[T])
+				// Use editor action if available
+				if m.opts.QuoteContextPrepare != nil {
+					initialContent, err := m.opts.QuoteContextPrepare(item.value)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					return m, m.startEditorForAction(item.value, 4, initialContent)
 				}
 			}
 			return m, nil
@@ -515,26 +673,140 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// editInEditor opens a file in $EDITOR at the specified line
-func (m *SelectionModel[T]) editInEditor(filePath string, lineNum int) error {
+// editInEditor opens a file in $EDITOR at the specified line (for ctrl+e)
+func (m *SelectionModel[T]) editInEditor(filePath string, lineNum int) tea.Cmd {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vim"
 	}
 
-	var cmd *exec.Cmd
+	var c *exec.Cmd
 	if lineNum > 0 {
-		// Use +line convention
-		cmd = exec.Command(editor, fmt.Sprintf("+%d", lineNum), filePath)
+		c = exec.Command(editor, fmt.Sprintf("+%d", lineNum), filePath)
 	} else {
-		cmd = exec.Command(editor, filePath)
+		c = exec.Command(editor, filePath)
 	}
 
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err: err}
+	})
+}
 
-	return cmd.Run()
+// startEditorForAction prepares a temp file and launches the editor via tea.ExecProcess
+func (m *SelectionModel[T]) startEditorForAction(item T, actionNum int, initialContent string) tea.Cmd {
+	// Create temp file with initial content
+	tmpFile, err := os.CreateTemp("", "gh-prreview-comment-*.md")
+	if err != nil {
+		return m.list.NewStatusMessage(Colorize(ColorRed, fmt.Sprintf("failed to create temp file: %v", err)))
+	}
+
+	template := "# Write your reply above. Lines starting with # are ignored.\n"
+	content := initialContent + template
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return m.list.NewStatusMessage(Colorize(ColorRed, fmt.Sprintf("failed to write temp file: %v", err)))
+	}
+	_ = tmpFile.Close()
+
+	// Store state for when editor completes
+	m.pendingEditorItem = item
+	m.pendingEditorTmpFile = tmpFile.Name()
+	m.pendingEditorAction = actionNum
+
+	// Build editor command
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	editorParts := strings.Fields(editor)
+	c := exec.Command(editorParts[0], append(editorParts[1:], tmpFile.Name())...)
+
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err: err}
+	})
+}
+
+// handleEditorFinished processes the result after the editor closes
+func (m *SelectionModel[T]) handleEditorFinished(msg editorFinishedMsg) (tea.Model, tea.Cmd) {
+	// Clean up temp file
+	tmpFile := m.pendingEditorTmpFile
+	actionNum := m.pendingEditorAction
+	defer func() {
+		if tmpFile != "" {
+			_ = os.Remove(tmpFile)
+		}
+		m.pendingEditorTmpFile = ""
+		m.pendingEditorAction = 0
+	}()
+
+	if msg.err != nil {
+		return m, m.list.NewStatusMessage(Colorize(ColorRed, fmt.Sprintf("editor error: %v", msg.err)))
+	}
+
+	if tmpFile == "" {
+		return m, nil
+	}
+
+	// Read the editor content
+	content, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return m, m.list.NewStatusMessage(Colorize(ColorRed, fmt.Sprintf("failed to read editor content: %v", err)))
+	}
+
+	// Sanitize content (strip # comment lines)
+	body := SanitizeEditorContent(string(content))
+	if body == "" {
+		return m, m.list.NewStatusMessage(Colorize(ColorYellow, "comment body cannot be empty"))
+	}
+
+	// Call the appropriate completion handler
+	var statusMsg string
+	switch actionNum {
+	case 2:
+		if m.opts.ResolveCommentComplete != nil {
+			statusMsg, err = m.opts.ResolveCommentComplete(m.pendingEditorItem, body)
+		}
+	case 3:
+		if m.opts.QuoteComplete != nil {
+			statusMsg, err = m.opts.QuoteComplete(m.pendingEditorItem, body)
+		}
+	case 4:
+		if m.opts.QuoteContextComplete != nil {
+			statusMsg, err = m.opts.QuoteContextComplete(m.pendingEditorItem, body)
+		}
+	}
+
+	if err != nil {
+		return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+	}
+
+	// Update the item in the list
+	m.list.SetItem(m.list.Index(), listItem[T]{value: m.pendingEditorItem, item: m.opts.Renderer})
+
+	// Show confirmation message that persists until user dismisses it
+	if statusMsg != "" {
+		m.confirmationMessage = statusMsg
+	}
+	return m, nil
+}
+
+// SanitizeEditorContent strips trailing lines starting with # and trims whitespace.
+// This preserves Markdown headings in the body while removing the instruction
+// template that is appended at the end of editor content.
+func SanitizeEditorContent(raw string) string {
+	lines := strings.Split(raw, "\n")
+	// Remove trailing lines that are empty or start with #
+	for len(lines) > 0 {
+		last := lines[len(lines)-1]
+		if strings.TrimSpace(last) == "" || strings.HasPrefix(last, "#") {
+			lines = lines[:len(lines)-1]
+		} else {
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // updateVisibleItems updates the list items based on the current filter state
@@ -548,8 +820,42 @@ func (m *SelectionModel[T]) updateVisibleItems() {
 	m.list.SetItems(visible)
 }
 
+// isSelectedResolved returns true if the currently selected item is in resolved state
+func (m *SelectionModel[T]) isSelectedResolved() bool {
+	if m.opts.IsItemResolved == nil {
+		return false
+	}
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return false
+	}
+	item := selected.(listItem[T])
+	return m.opts.IsItemResolved(item.value)
+}
+
+// getResolveActionKey returns the appropriate action key based on resolved state
+func (m *SelectionModel[T]) getResolveActionKey() string {
+	if m.isSelectedResolved() && m.opts.ResolveKeyAlt != "" {
+		return m.opts.ResolveKeyAlt
+	}
+	return m.opts.ResolveKey
+}
+
+// getResolveActionKeySecond returns the appropriate second action key based on resolved state
+func (m *SelectionModel[T]) getResolveActionKeySecond() string {
+	if m.isSelectedResolved() && m.opts.ResolveCommentKeyAlt != "" {
+		return m.opts.ResolveCommentKeyAlt
+	}
+	return m.opts.ResolveCommentKey
+}
+
 // View renders the model
 func (m *SelectionModel[T]) View() string {
+	// Show confirmation message if present
+	if m.confirmationMessage != "" {
+		return m.renderConfirmation()
+	}
+
 	// Show loading state
 	if m.loadingDetail {
 		loadingStyle := lipgloss.NewStyle()
@@ -573,14 +879,17 @@ func (m *SelectionModel[T]) View() string {
 	}
 
 	if m.showDetail {
-		// Footer with navigation hint
+		// Footer with navigation hint (matches main view style)
 		footerStyle := lipgloss.NewStyle()
 		if ColorsEnabled() {
 			footerStyle = footerStyle.
 				Foreground(lipgloss.Color("252")).
 				Italic(true)
 		}
-		footer := footerStyle.Render("esc/q back • ^F/^B pgdn/up • o open • r resolve • R resolve+comment")
+		// Dynamic help based on resolved state
+		resolveKey := m.getResolveActionKey()
+		resolveKeySecond := m.getResolveActionKeySecond()
+		footer := footerStyle.Render(fmt.Sprintf("esc/q back • ^F/^B pgdn/up • o open • %s • %s • Q quote • C quote+context", resolveKey, resolveKeySecond))
 
 		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
 	}
@@ -599,8 +908,10 @@ func (m *SelectionModel[T]) View() string {
 
 	var helpText string
 	if !m.showHelp {
-		// Compact view
-		helpText = "↑/↓ navigate • enter details • o open • r resolve • R resolve+comment • i refresh • h show/hide resolved • / search • q quit • ? help"
+		// Compact view with dynamic resolve/unresolve keys
+		resolveKey := m.getResolveActionKey()
+		resolveKeySecond := m.getResolveActionKeySecond()
+		helpText = fmt.Sprintf("↑/↓ navigate • enter details • o open • %s • %s • Q quote • C quote+context • i refresh • h show/hide resolved • / search • q quit • ? help", resolveKey, resolveKeySecond)
 	} else {
 		helpText = ""
 	}
@@ -631,6 +942,85 @@ func (m *SelectionModel[T]) View() string {
 	)
 
 	return content
+}
+
+// renderConfirmation draws a confirmation message that waits for user dismissal.
+func (m *SelectionModel[T]) renderConfirmation() string {
+	width := m.windowSize.Width
+	height := m.windowSize.Height
+
+	if width == 0 {
+		width = 80
+	}
+	if height == 0 {
+		height = 24
+	}
+
+	// Style for the confirmation box
+	boxStyle := lipgloss.NewStyle().
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder())
+
+	if ColorsEnabled() {
+		boxStyle = boxStyle.
+			BorderForeground(lipgloss.Color("42")). // Green border
+			Foreground(lipgloss.Color("252"))
+	}
+
+	// Build the message content
+	titleStyle := lipgloss.NewStyle()
+	if ColorsEnabled() {
+		titleStyle = titleStyle.
+			Foreground(lipgloss.Color("42")). // Green
+			Bold(true)
+	}
+
+	title := titleStyle.Render(EmojiText("✓ ", "") + "Success")
+	message := m.confirmationMessage
+	hint := "\nPress any key to continue..."
+
+	hintStyle := lipgloss.NewStyle()
+	if ColorsEnabled() {
+		hintStyle = hintStyle.
+			Foreground(lipgloss.Color("245")). // Gray
+			Italic(true)
+	}
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		title,
+		"",
+		message,
+		hintStyle.Render(hint),
+	)
+
+	box := boxStyle.Render(content)
+
+	// Center the box
+	boxWidth := lipgloss.Width(box)
+	boxHeight := lipgloss.Height(box)
+
+	padLeft := (width - boxWidth) / 2
+	padTop := (height - boxHeight) / 2
+
+	if padLeft < 0 {
+		padLeft = 0
+	}
+	if padTop < 0 {
+		padTop = 0
+	}
+
+	// Build the final view with centering
+	var lines []string
+	for i := 0; i < padTop; i++ {
+		lines = append(lines, "")
+	}
+
+	for _, line := range strings.Split(box, "\n") {
+		lines = append(lines, strings.Repeat(" ", padLeft)+line)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderHelpOverlay draws a centered help modal similar to the default Bubble Tea help panel.
@@ -672,12 +1062,26 @@ func (m *SelectionModel[T]) renderHelpOverlay() string {
 	}
 
 	if m.opts.ResolveAction != nil && m.opts.ResolveKey != "" {
-		key, desc := splitActionKey(m.opts.ResolveKey)
+		// Use dynamic action key based on resolved state
+		actionKey := m.getResolveActionKey()
+		key, desc := splitActionKey(actionKey)
 		entries = append(entries, entry{key, desc})
 	}
 
-	if m.opts.ResolveCommentKey != "" {
-		key, desc := splitActionKey(m.opts.ResolveCommentKey)
+	if m.opts.ResolveCommentPrepare != nil && m.opts.ResolveCommentKey != "" {
+		// Use dynamic action key based on resolved state
+		actionKey := m.getResolveActionKeySecond()
+		key, desc := splitActionKey(actionKey)
+		entries = append(entries, entry{key, desc})
+	}
+
+	if m.opts.QuotePrepare != nil && m.opts.QuoteKey != "" {
+		key, desc := splitActionKey(m.opts.QuoteKey)
+		entries = append(entries, entry{key, desc})
+	}
+
+	if m.opts.QuoteContextPrepare != nil && m.opts.QuoteContextKey != "" {
+		key, desc := splitActionKey(m.opts.QuoteContextKey)
 		entries = append(entries, entry{key, desc})
 	}
 
@@ -832,17 +1236,4 @@ func (d itemDelegate[T]) Render(w io.Writer, m list.Model, index int, item list.
 	}
 
 	_, _ = fmt.Fprint(w, s.String())
-}
-
-// SanitizeEditorContent strips lines starting with # and trims whitespace.
-// This is used for processing content from editor-based input where # lines
-// are treated as comments (similar to git commit messages).
-func SanitizeEditorContent(raw string) string {
-	var lines []string
-	for _, line := range strings.Split(raw, "\n") {
-		if !strings.HasPrefix(line, "#") {
-			lines = append(lines, line)
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
