@@ -41,6 +41,9 @@ type EditorPreparer[T any] func(item T) (string, error)
 // EditorCompleter is called with the editor content to complete the action
 type EditorCompleter[T any] func(item T, editorContent string) (string, error)
 
+// loadDetailMsg triggers the actual detail loading after showing loading state
+type loadDetailMsg struct{}
+
 var ErrNoSelection = errors.New("no selection made")
 
 // SelectorOptions configures the interactive selector.
@@ -100,6 +103,9 @@ type SelectionModel[T any] struct {
 	// Configuration (from SelectorOptions)
 	opts         SelectorOptions[T]
 	filterActive bool
+
+	// Loading state for detail view
+	loadingDetail bool
 }
 
 // Item wraps a generic item for the list model
@@ -230,19 +236,68 @@ func (m *SelectionModel[T]) Init() tea.Cmd {
 
 // Update handles user input
 func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle deferred detail loading
+	if _, ok := msg.(loadDetailMsg); ok {
+		m.loadingDetail = false
+		selected := m.list.SelectedItem()
+		if selected != nil {
+			item := selected.(listItem[T])
+
+			if m.opts.OnSelect != nil {
+				result, err := m.opts.OnSelect(item.value)
+				if err != nil {
+					return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+				}
+
+				if result == "SHOW_DETAIL" || strings.HasPrefix(result, "SHOW_DETAIL:") {
+					m.showDetail = true
+					// Reserve 1 line for footer (nav hint)
+					m.viewport.Height = m.windowSize.Height - 1
+					content := item.item.Preview(item.value)
+					wrappedContent := WrapText(content, m.viewport.Width)
+					m.viewport.SetContent(wrappedContent)
+					m.viewport.GotoTop()
+					// Check for warning message after SHOW_DETAIL:
+					if strings.HasPrefix(result, "SHOW_DETAIL:") {
+						warning := strings.TrimPrefix(result, "SHOW_DETAIL:")
+						return m, m.list.NewStatusMessage(Colorize(ColorYellow, warning))
+					}
+					return m, nil
+				}
+
+				// Assume it was a toggle or action that requires refresh
+				m.updateVisibleItems()
+				m.list.SetItem(m.list.Index(), item)
+				if result != "" {
+					return m, m.list.NewStatusMessage(result)
+				}
+			}
+		}
+		return m, nil
+	}
+
 	// Handle detail view navigation
 	if m.showDetail {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "esc", "q", "backspace":
+			case "esc", "backspace", "left", "h", "q":
 				m.showDetail = false
+				return m, nil
+			case "ctrl+f":
+				// Page down in detail view
+				m.viewport.ViewDown()
+				return m, nil
+			case "ctrl+b":
+				// Page up in detail view
+				m.viewport.ViewUp()
 				return m, nil
 			}
 		case tea.WindowSizeMsg:
 			m.windowSize = msg
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height
+			// Reserve 1 line for footer (nav hint)
+			m.viewport.Height = msg.Height - 1
 		}
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -347,35 +402,16 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := selected.(listItem[T])
 
 				if m.opts.OnSelect != nil {
-					msg, err := m.opts.OnSelect(item.value)
-					if err != nil {
-						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
-					}
-
-					if msg == "SHOW_DETAIL" {
-						// Show detail view
-						m.showDetail = true
-						content := item.item.Preview(item.value)
-						wrappedContent := WrapText(content, m.viewport.Width)
-						m.viewport.SetContent(wrappedContent)
-						m.viewport.GotoTop()
-						return m, nil
-					}
-
-					// Assume it was a toggle or action that requires refresh
-					m.updateVisibleItems()
-					// Force update of the item in the list to reflect changes
-					m.list.SetItem(m.list.Index(), item)
-
-					if msg != "" {
-						return m, m.list.NewStatusMessage(msg)
-					}
-					return m, nil
+					// Show loading state and defer the actual work
+					m.loadingDetail = true
+					return m, func() tea.Msg { return loadDetailMsg{} }
 				}
 
 				if m.opts.OnOpen != nil {
-					// Browse mode: Show Detail
+					// Browse mode: Show Detail (no deferred loading needed here)
 					m.showDetail = true
+					// Reserve 1 line for footer (nav hint)
+					m.viewport.Height = m.windowSize.Height - 1
 					content := item.item.Preview(item.value)
 					wrappedContent := WrapText(content, m.viewport.Width)
 					m.viewport.SetContent(wrappedContent)
@@ -422,6 +458,8 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if selected != nil {
 					item := selected.(listItem[T])
 					m.showDetail = true
+					// Reserve 1 line for footer (nav hint)
+					m.viewport.Height = m.windowSize.Height - 1
 					content := item.item.Preview(item.value)
 					wrappedContent := WrapText(content, m.viewport.Width)
 					m.viewport.SetContent(wrappedContent)
@@ -478,8 +516,28 @@ func (m *SelectionModel[T]) updateVisibleItems() {
 
 // View renders the model
 func (m *SelectionModel[T]) View() string {
+	// Show loading state
+	if m.loadingDetail {
+		loadingStyle := lipgloss.NewStyle()
+		if ColorsEnabled() {
+			loadingStyle = loadingStyle.
+				Foreground(lipgloss.Color("214")). // Orange
+				Bold(true)
+		}
+		return loadingStyle.Render("Loading...")
+	}
+
 	if m.showDetail {
-		return m.viewport.View()
+		// Footer with navigation hint
+		footerStyle := lipgloss.NewStyle()
+		if ColorsEnabled() {
+			footerStyle = footerStyle.
+				Foreground(lipgloss.Color("252")).
+				Italic(true)
+		}
+		footer := footerStyle.Render("esc/q back • ^F/^B pgdn/up • o open • r resolve • R resolve+comment")
+
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
 	}
 
 	if m.showHelp {
