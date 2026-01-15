@@ -44,6 +44,12 @@ type EditorCompleter[T any] func(item T, editorContent string) (string, error)
 // loadDetailMsg triggers the actual detail loading after showing loading state
 type loadDetailMsg struct{}
 
+// refreshFinishedMsg signals that refresh has completed
+type refreshFinishedMsg struct {
+	items any // will be []T
+	err   error
+}
+
 var ErrNoSelection = errors.New("no selection made")
 
 // SelectorOptions configures the interactive selector.
@@ -103,6 +109,9 @@ type SelectionModel[T any] struct {
 	// Configuration (from SelectorOptions)
 	opts         SelectorOptions[T]
 	filterActive bool
+
+	// Runtime state for refresh
+	refreshing bool
 
 	// Loading state for detail view
 	loadingDetail bool
@@ -276,6 +285,21 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle refresh completion
+	if refreshMsg, ok := msg.(refreshFinishedMsg); ok {
+		m.refreshing = false
+		if refreshMsg.err != nil {
+			return m, m.list.NewStatusMessage(Colorize(ColorRed, fmt.Sprintf("refresh failed: %v", refreshMsg.err)))
+		}
+		// Type assert the items
+		if newItems, ok := refreshMsg.items.([]T); ok {
+			m.items = newItems
+			m.updateVisibleItems()
+			return m, m.list.NewStatusMessage(Colorize(ColorGreen, fmt.Sprintf("Refreshed: %d items", len(newItems))))
+		}
+		return m, nil
+	}
+
 	// Handle detail view navigation
 	if m.showDetail {
 		switch msg := msg.(type) {
@@ -340,6 +364,16 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateVisibleItems()
 				return m, nil
 			}
+		case "i":
+			// Refresh items from data source
+			if m.opts.RefreshItems != nil && !m.refreshing {
+				m.refreshing = true
+				return m, func() tea.Msg {
+					items, err := m.opts.RefreshItems()
+					return refreshFinishedMsg{items: items, err: err}
+				}
+			}
+			return m, nil
 		case "o":
 			if m.opts.OnOpen != nil {
 				selected := m.list.SelectedItem()
@@ -527,6 +561,17 @@ func (m *SelectionModel[T]) View() string {
 		return loadingStyle.Render("Loading...")
 	}
 
+	// Show refreshing state
+	if m.refreshing {
+		refreshStyle := lipgloss.NewStyle()
+		if ColorsEnabled() {
+			refreshStyle = refreshStyle.
+				Foreground(lipgloss.Color("214")). // Orange
+				Bold(true)
+		}
+		return refreshStyle.Render("Refreshing...")
+	}
+
 	if m.showDetail {
 		// Footer with navigation hint
 		footerStyle := lipgloss.NewStyle()
@@ -555,7 +600,7 @@ func (m *SelectionModel[T]) View() string {
 	var helpText string
 	if !m.showHelp {
 		// Compact view
-		helpText = "↑/↓ navigate • enter details • o open • r resolve • R resolve+comment • h show/hide resolved • / search • q quit • ? help"
+		helpText = "↑/↓ navigate • enter details • o open • r resolve • R resolve+comment • i refresh • h show/hide resolved • / search • q quit • ? help"
 	} else {
 		helpText = ""
 	}
@@ -620,6 +665,10 @@ func (m *SelectionModel[T]) renderHelpOverlay() string {
 
 	if m.opts.FilterFunc != nil {
 		entries = append(entries, entry{"h", "Toggle show resolved"})
+	}
+
+	if m.opts.RefreshItems != nil {
+		entries = append(entries, entry{"i", "Refresh"})
 	}
 
 	if m.opts.ResolveAction != nil && m.opts.ResolveKey != "" {
