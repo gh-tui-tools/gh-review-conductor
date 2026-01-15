@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -36,26 +35,71 @@ type ItemRenderer[T any] interface {
 // CustomAction is a function that handles custom actions on items
 type CustomAction[T any] func(item T) (string, error)
 
+// EditorPreparer returns the initial content for the editor, or error to abort
+type EditorPreparer[T any] func(item T) (string, error)
+
+// EditorCompleter is called with the editor content to complete the action
+type EditorCompleter[T any] func(item T, editorContent string) (string, error)
+
 var ErrNoSelection = errors.New("no selection made")
+
+// SelectorOptions configures the interactive selector.
+// Use this struct to configure all selector behavior in a readable way.
+type SelectorOptions[T any] struct {
+	// Required
+	Items    []T
+	Renderer ItemRenderer[T]
+
+	// Core callbacks
+	OnSelect       CustomAction[T]        // Called when Enter is pressed
+	OnOpen         CustomAction[T]        // Called when 'o' is pressed
+	FilterFunc     func(T, bool) bool     // Filter items based on state
+	IsItemResolved func(T) bool           // For dynamic key display (r vs u)
+	RefreshItems   func() ([]T, error)    // Called when 'i' is pressed
+
+	// Action: r/u (resolve toggle)
+	ResolveAction CustomAction[T]
+	ResolveKey    string // e.g., "r resolve"
+	ResolveKeyAlt string // e.g., "u unresolve"
+
+	// Action: R/U (resolve+comment via editor)
+	ResolveCommentPrepare  EditorPreparer[T]
+	ResolveCommentComplete EditorCompleter[T]
+	ResolveCommentKey      string // e.g., "R resolve+comment"
+	ResolveCommentKeyAlt   string // e.g., "U unresolve+comment"
+
+	// Action: Q (quote reply via editor)
+	QuotePrepare  EditorPreparer[T]
+	QuoteComplete EditorCompleter[T]
+	QuoteKey      string // e.g., "Q quote"
+
+	// Action: C (quote+context via editor)
+	QuoteContextPrepare  EditorPreparer[T]
+	QuoteContextComplete EditorCompleter[T]
+	QuoteContextKey      string // e.g., "C quote+context"
+
+	// Action: a (launch agent)
+	AgentAction CustomAction[T]
+	AgentKey    string // e.g., "a agent"
+
+	// Action: e (edit file)
+	EditAction CustomAction[T]
+	EditKey    string // e.g., "e edit"
+}
 
 // SelectionModel is the tea.Model for interactive selection
 type SelectionModel[T any] struct {
-	list               list.Model
-	items              []T
-	result             []T
-	windowSize         tea.WindowSizeMsg
-	customAction       CustomAction[T]
-	actionKey          string // Key binding description for custom action (e.g., "r resolve")
-	customActionSecond CustomAction[T]
-	actionKeySecond    string // Key binding description for second custom action (e.g., "R resolve+comment")
-	onOpen             CustomAction[T]
-	viewport           viewport.Model
-	showDetail         bool
-	filterFunc         func(T, bool) bool
-	filterActive       bool
-	renderer           ItemRenderer[T]
-	showHelp           bool
-	onSelect           CustomAction[T]
+	list       list.Model
+	items      []T
+	result     []T
+	windowSize tea.WindowSizeMsg
+	viewport   viewport.Model
+	showDetail bool
+	showHelp   bool
+
+	// Configuration (from SelectorOptions)
+	opts         SelectorOptions[T]
+	filterActive bool
 }
 
 // Item wraps a generic item for the list model
@@ -76,22 +120,43 @@ func (i listItem[T]) Description() string {
 	return i.item.Description(i.value)
 }
 
-// SelectFromList creates an interactive selector for a list of items
-// Returns selected items in order they were selected
+// SelectFromList creates an interactive selector for a list of items.
+// For more options, use Select() with SelectorOptions.
 func SelectFromList[T any](items []T, renderer ItemRenderer[T]) (T, error) {
-	return SelectFromListWithAction(items, renderer, nil, "", nil, nil, nil, nil, "")
+	return Select(SelectorOptions[T]{
+		Items:    items,
+		Renderer: renderer,
+	})
 }
 
-// SelectFromListWithAction creates an interactive selector with a custom action
-// The customAction is triggered by r, and actionKey describes the action in the help text
+// SelectFromListWithAction creates an interactive selector with a custom action.
+// Deprecated: Use Select() with SelectorOptions for new code.
 func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], customAction CustomAction[T], actionKey string, onOpen CustomAction[T], filterFunc func(T, bool) bool, onSelect CustomAction[T], customActionSecond CustomAction[T], actionKeySecond string) (T, error) {
+	return Select(SelectorOptions[T]{
+		Items:         items,
+		Renderer:      renderer,
+		OnSelect:      onSelect,
+		OnOpen:        onOpen,
+		FilterFunc:    filterFunc,
+		ResolveAction: customAction,
+		ResolveKey:    actionKey,
+		// Note: old API used customActionSecond for R key but it was a sync action.
+		// The new API uses editor callbacks for R. For backward compat, we don't
+		// support the old sync R action through this wrapper.
+		ResolveCommentKey: actionKeySecond,
+	})
+}
+
+// Select creates an interactive selector with the given options.
+// This is the primary API for creating selectors.
+func Select[T any](opts SelectorOptions[T]) (T, error) {
 	// Convert items to list items
-	listItems := make([]list.Item, len(items))
-	for i, item := range items {
-		listItems[i] = listItem[T]{value: item, item: renderer}
+	listItems := make([]list.Item, len(opts.Items))
+	for i, item := range opts.Items {
+		listItems[i] = listItem[T]{value: item, item: opts.Renderer}
 	}
 
-	l := list.New(listItems, itemDelegate[T]{renderer}, 100, 20)
+	l := list.New(listItems, itemDelegate[T]{opts.Renderer}, 100, 20)
 
 	colorOn := ColorsEnabled()
 
@@ -132,21 +197,14 @@ func SelectFromListWithAction[T any](items []T, renderer ItemRenderer[T], custom
 	l.SetShowHelp(false)
 
 	m := &SelectionModel[T]{
-		list:               l,
-		items:              items,
-		result:             make([]T, 0),
-		customAction:       customAction,
-		actionKey:          actionKey,
-		customActionSecond: customActionSecond,
-		actionKeySecond:    actionKeySecond,
-		onOpen:             onOpen,
-		viewport:           viewport.New(0, 0),
-		filterFunc:         filterFunc,
-		renderer:           renderer,
-		onSelect:           onSelect,
+		list:     l,
+		items:    opts.Items,
+		result:   make([]T, 0),
+		viewport: viewport.New(0, 0),
+		opts:     opts,
 	}
 
-	if filterFunc != nil {
+	if opts.FilterFunc != nil {
 		m.filterActive = true
 		m.updateVisibleItems()
 	}
@@ -222,17 +280,17 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 		case "h":
-			if m.filterFunc != nil {
+			if m.opts.FilterFunc != nil {
 				m.filterActive = !m.filterActive
 				m.updateVisibleItems()
 				return m, nil
 			}
 		case "o":
-			if m.onOpen != nil {
+			if m.opts.OnOpen != nil {
 				selected := m.list.SelectedItem()
 				if selected != nil {
 					item := selected.(listItem[T])
-					msg, err := m.onOpen(item.value)
+					msg, err := m.opts.OnOpen(item.value)
 					if err != nil {
 						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 					}
@@ -251,7 +309,7 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 				item := selectedItem.(listItem[T])
-				if !m.renderer.IsSkippable(item.value) {
+				if !m.opts.Renderer.IsSkippable(item.value) {
 					break
 				}
 				// If we hit the bottom and it's skippable, we can't go further down.
@@ -272,7 +330,7 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 				item := selectedItem.(listItem[T])
-				if !m.renderer.IsSkippable(item.value) {
+				if !m.opts.Renderer.IsSkippable(item.value) {
 					break
 				}
 				// If we hit the top and it's skippable
@@ -288,8 +346,8 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if selected != nil {
 				item := selected.(listItem[T])
 
-				if m.onSelect != nil {
-					msg, err := m.onSelect(item.value)
+				if m.opts.OnSelect != nil {
+					msg, err := m.opts.OnSelect(item.value)
 					if err != nil {
 						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 					}
@@ -297,19 +355,9 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg == "SHOW_DETAIL" {
 						// Show detail view
 						m.showDetail = true
-
-						previewStart := time.Now()
 						content := item.item.Preview(item.value)
-						fmt.Fprintf(os.Stderr, "[DEBUG] Preview() call took %v\n", time.Since(previewStart))
-
-						wrapStart := time.Now()
 						wrappedContent := WrapText(content, m.viewport.Width)
-						fmt.Fprintf(os.Stderr, "[DEBUG] WrapText() took %v, content length: %d\n", time.Since(wrapStart), len(content))
-
-						setContentStart := time.Now()
 						m.viewport.SetContent(wrappedContent)
-						fmt.Fprintf(os.Stderr, "[DEBUG] viewport.SetContent() took %v\n", time.Since(setContentStart))
-
 						m.viewport.GotoTop()
 						return m, nil
 					}
@@ -325,23 +373,12 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				if m.onOpen != nil {
+				if m.opts.OnOpen != nil {
 					// Browse mode: Show Detail
 					m.showDetail = true
-
-					previewStart := time.Now()
 					content := item.item.Preview(item.value)
-					fmt.Fprintf(os.Stderr, "[DEBUG] Preview() call took %v\n", time.Since(previewStart))
-
-					wrapStart := time.Now()
 					wrappedContent := WrapText(content, m.viewport.Width)
-					fmt.Fprintf(os.Stderr, "[DEBUG] WrapText() took %v, content length: %d\n", time.Since(wrapStart), len(content))
-
-					setContentStart := time.Now()
 					m.viewport.SetContent(wrappedContent)
-					fmt.Fprintf(os.Stderr, "[DEBUG] viewport.SetContent() took %v\n", time.Since(setContentStart))
-
-					// Reset viewport position
 					m.viewport.GotoTop()
 					return m, nil
 				}
@@ -359,32 +396,13 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "r":
-			// Custom action (e.g., resolve)
-			if m.customAction != nil {
+		case "r", "u":
+			// Resolve/unresolve action
+			if m.opts.ResolveAction != nil {
 				selected := m.list.SelectedItem()
 				if selected != nil {
 					item := selected.(listItem[T])
-					msg, err := m.customAction(item.value)
-					if err != nil {
-						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
-					}
-					// Force update of the item in the list to reflect changes
-					m.list.SetItem(m.list.Index(), item)
-
-					if msg != "" {
-						return m, m.list.NewStatusMessage(msg)
-					}
-				}
-			}
-			return m, nil
-		case "R":
-			// Secondary custom action (e.g., resolve with comment)
-			if m.customActionSecond != nil {
-				selected := m.list.SelectedItem()
-				if selected != nil {
-					item := selected.(listItem[T])
-					msg, err := m.customActionSecond(item.value)
+					msg, err := m.opts.ResolveAction(item.value)
 					if err != nil {
 						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 					}
@@ -399,7 +417,7 @@ func (m *SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "right", "l":
 			// Also allow right arrow or 'l' to enter detail view if in browse mode
-			if m.onOpen != nil {
+			if m.opts.OnOpen != nil {
 				selected := m.list.SelectedItem()
 				if selected != nil {
 					item := selected.(listItem[T])
@@ -451,8 +469,8 @@ func (m *SelectionModel[T]) editInEditor(filePath string, lineNum int) error {
 func (m *SelectionModel[T]) updateVisibleItems() {
 	var visible []list.Item
 	for _, item := range m.items {
-		if m.filterFunc == nil || m.filterFunc(item, m.filterActive) {
-			visible = append(visible, listItem[T]{value: item, item: m.renderer})
+		if m.opts.FilterFunc == nil || m.opts.FilterFunc(item, m.filterActive) {
+			visible = append(visible, listItem[T]{value: item, item: m.opts.Renderer})
 		}
 	}
 	m.list.SetItems(visible)
@@ -536,23 +554,23 @@ func (m *SelectionModel[T]) renderHelpOverlay() string {
 		{"?", "Close help"},
 	}
 
-	if m.onOpen != nil {
+	if m.opts.OnOpen != nil {
 		entries = append(entries, entry{"o", "Open in browser"})
 	}
 
 	entries = append(entries, entry{"ctrl+e", "Edit in $EDITOR"})
 
-	if m.filterFunc != nil {
+	if m.opts.FilterFunc != nil {
 		entries = append(entries, entry{"h", "Toggle show resolved"})
 	}
 
-	if m.customAction != nil && m.actionKey != "" {
-		key, desc := splitActionKey(m.actionKey)
+	if m.opts.ResolveAction != nil && m.opts.ResolveKey != "" {
+		key, desc := splitActionKey(m.opts.ResolveKey)
 		entries = append(entries, entry{key, desc})
 	}
 
-	if m.customActionSecond != nil && m.actionKeySecond != "" {
-		key, desc := splitActionKey(m.actionKeySecond)
+	if m.opts.ResolveCommentKey != "" {
+		key, desc := splitActionKey(m.opts.ResolveCommentKey)
 		entries = append(entries, entry{key, desc})
 	}
 
