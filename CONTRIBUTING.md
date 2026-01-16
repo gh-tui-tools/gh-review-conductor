@@ -154,6 +154,13 @@ When adding new features:
 - Use table-driven tests where appropriate
 - Test edge cases and error conditions
 
+### Coverage Reporting
+
+The project uses build tags to exclude interactive TUI code from coverage metrics.
+Code in `*_nocov.go` files (with `//go:build !coverage`) contains untestable
+interactive terminal code. The `make test-coverage` command uses `-tags=coverage`
+to swap in stub implementations, giving accurate coverage for testable code.
+
 Example test structure:
 
 ```go
