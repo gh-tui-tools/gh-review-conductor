@@ -21,8 +21,8 @@ install: build ## Install the extension to gh
 uninstall: ## Uninstall the extension from gh
 	gh extension remove prreview
 
-test: ## Run tests
-	$(GO) test -v ./...
+test: ## Run tests with race detection
+	$(GO) test -race -v ./...
 
 test-coverage: ## Run tests with coverage (excludes interactive TUI code)
 	$(GO) test -v -tags=coverage -coverprofile=coverage.out ./...

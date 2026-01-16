@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/glamour"
@@ -25,11 +26,11 @@ const (
 )
 
 var colorEnabled = true
-var uiDebug = false
+var uiDebug atomic.Bool
 
 // SetUIDebug enables debug timing output for UI operations.
 func SetUIDebug(enabled bool) {
-	uiDebug = enabled
+	uiDebug.Store(enabled)
 }
 
 // Cached glamour renderer for markdown rendering (created once, reused)
@@ -56,7 +57,7 @@ func WarmupMarkdownRenderer() {
 			_, _ = r.Render("```go\nfunc main() {}\n```")
 			_, _ = r.Render("```js\nconst x = 1;\n```")
 		}
-		if uiDebug {
+		if uiDebug.Load() {
 			fmt.Fprintf(os.Stderr, "[DEBUG] Markdown warmup completed in %v\n", time.Since(start))
 		}
 	}()
@@ -178,7 +179,7 @@ func WrapText(text string, width int) string {
 func getMarkdownRenderer() *glamour.TermRenderer {
 	rendererInitOnce.Do(func() {
 		var start time.Time
-		if uiDebug {
+		if uiDebug.Load() {
 			start = time.Now()
 			fmt.Fprintf(os.Stderr, "[DEBUG] Creating glamour renderer...\n")
 		}
@@ -192,7 +193,7 @@ func getMarkdownRenderer() *glamour.TermRenderer {
 		if err == nil {
 			cachedMarkdownRenderer = r
 		}
-		if uiDebug {
+		if uiDebug.Load() {
 			fmt.Fprintf(os.Stderr, "[DEBUG] Glamour renderer created in %v\n", time.Since(start))
 		}
 	})
@@ -216,13 +217,13 @@ func RenderMarkdown(text string) (string, error) {
 	}
 
 	var start time.Time
-	if uiDebug {
+	if uiDebug.Load() {
 		start = time.Now()
 	}
 
 	rendered, err := r.Render(text)
 
-	if uiDebug {
+	if uiDebug.Load() {
 		fmt.Fprintf(os.Stderr, "[DEBUG] RenderMarkdown took %v for %d bytes\n", time.Since(start), len(text))
 	}
 
