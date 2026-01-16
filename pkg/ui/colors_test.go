@@ -380,18 +380,18 @@ func TestRenderMarkdownColorsDisabled(t *testing.T) {
 
 func TestSetUIDebug(t *testing.T) {
 	// Save original state and restore after test
-	originalDebug := uiDebug
-	defer func() { uiDebug = originalDebug }()
+	originalDebug := uiDebug.Load()
+	defer func() { uiDebug.Store(originalDebug) }()
 
 	// Test enabling debug
 	SetUIDebug(true)
-	if !uiDebug {
+	if !uiDebug.Load() {
 		t.Error("SetUIDebug(true) should set uiDebug to true")
 	}
 
 	// Test disabling debug
 	SetUIDebug(false)
-	if uiDebug {
+	if uiDebug.Load() {
 		t.Error("SetUIDebug(false) should set uiDebug to false")
 	}
 }
@@ -399,14 +399,14 @@ func TestSetUIDebug(t *testing.T) {
 func TestWarmupMarkdownRenderer(t *testing.T) {
 	// Save original state and restore after test
 	originalEnabled := colorEnabled
-	originalDebug := uiDebug
+	originalDebug := uiDebug.Load()
 	defer func() {
 		colorEnabled = originalEnabled
-		uiDebug = originalDebug
+		uiDebug.Store(originalDebug)
 	}()
 
 	colorEnabled = true
-	uiDebug = false // Disable debug to avoid stderr output
+	uiDebug.Store(false) // Disable debug to avoid stderr output
 
 	// Call warmup - it runs in a goroutine and should not panic
 	// Note: sync.Once means the renderer may already be initialized from other tests
@@ -426,14 +426,14 @@ func TestWarmupMarkdownRenderer(t *testing.T) {
 func TestGetMarkdownRenderer(t *testing.T) {
 	// Save original state and restore after test
 	originalEnabled := colorEnabled
-	originalDebug := uiDebug
+	originalDebug := uiDebug.Load()
 	defer func() {
 		colorEnabled = originalEnabled
-		uiDebug = originalDebug
+		uiDebug.Store(originalDebug)
 	}()
 
 	colorEnabled = true
-	uiDebug = false // Disable debug output
+	uiDebug.Store(false) // Disable debug output
 
 	// Note: sync.Once means the renderer may already be initialized from other tests
 	// We test that getMarkdownRenderer returns a consistent non-nil value
