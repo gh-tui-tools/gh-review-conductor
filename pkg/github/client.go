@@ -783,3 +783,45 @@ func (c *Client) ReplyToReviewComment(prNumber int, commentID int64, body string
 		CreatedAt: response.CreatedAt,
 	}, nil
 }
+
+// AddReactionToComment adds an emoji reaction to a review comment.
+// Supported emojis: +1, -1, laugh, confused, heart, hooray, rocket, eyes
+func (c *Client) AddReactionToComment(prNumber int, commentID int64, emoji string) error {
+	repo, err := c.getRepo()
+	if err != nil {
+		return err
+	}
+
+	c.debugLog("Adding reaction %s to comment %d on PR %d", emoji, commentID, prNumber)
+
+	// Create JSON payload in a temp file
+	tmpFile, err := os.CreateTemp("", "gh-prreview-reaction-*.json")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	defer func() {
+		_ = os.Remove(tmpFile.Name())
+	}()
+
+	payload := map[string]string{"content": emoji}
+	if err := json.NewEncoder(tmpFile).Encode(payload); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write reaction payload: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("repos/%s/pulls/comments/%d/reactions", repo, commentID)
+	stdOut, stdErr, err := gh.Exec("api", endpoint,
+		"-X", "POST",
+		"--header", "Accept: application/vnd.github.squirrel-girl-preview+json",
+		"--input", tmpFile.Name())
+	if err != nil {
+		c.debugLog("Reaction error: %v, stderr: %s", err, stdErr.String())
+		return fmt.Errorf("failed to add reaction: %w", err)
+	}
+
+	c.debugLog("Reaction response: %s", stdOut.String())
+	return nil
+}

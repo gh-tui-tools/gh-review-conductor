@@ -283,6 +283,35 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			return fmt.Sprintf("EDIT_FILE:%s:%d", item.Comment.Path, item.Comment.Line), nil
 		}
 
+		// Reaction action - get comment ID for reaction
+		reactionAction := func(item BrowseItem) (int64, error) {
+			if item.Type == "file" {
+				return 0, fmt.Errorf("cannot react to file header")
+			}
+			comment := item.Comment
+			// Get the right comment based on SelectedCommentIdx
+			if item.SelectedCommentIdx > 0 && item.SelectedCommentIdx-1 < len(comment.ThreadComments) {
+				return comment.ThreadComments[item.SelectedCommentIdx-1].ID, nil
+			}
+			return comment.ID, nil
+		}
+
+		// Reaction complete - apply the reaction via API
+		reactionComplete := func(commentID int64, emoji string) (string, error) {
+			err := client.AddReactionToComment(prNumber, commentID, emoji)
+			if err != nil {
+				return "", err
+			}
+			repo, err := client.GetRepo()
+			if err != nil {
+				// The reaction was added, but we can't create the URL.
+				// Return a success message without the URL.
+				return fmt.Sprintf("%s reaction added", emoji), nil
+			}
+			url := fmt.Sprintf("https://github.com/%s/pull/%d#discussion_r%d", repo, prNumber, commentID)
+			return fmt.Sprintf("%s reaction added at %s", emoji, url), nil
+		}
+
 		selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{
 			Items:    browseItems,
 			Renderer: renderer,
@@ -322,6 +351,11 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			// e key: edit file
 			EditAction: editAction,
 			EditKey:    "e edit",
+
+			// x key: add reaction
+			ReactionAction:   reactionAction,
+			ReactionComplete: reactionComplete,
+			ReactionKey:      "x react",
 		})
 		if err != nil {
 			if errors.Is(err, ui.ErrNoSelection) {

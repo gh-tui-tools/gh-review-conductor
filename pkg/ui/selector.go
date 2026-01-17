@@ -111,6 +111,11 @@ type SelectorOptions[T any] struct {
 	// Action: e (edit file)
 	EditAction CustomAction[T]
 	EditKey    string // e.g., "e edit"
+
+	// Action: x (add reaction)
+	ReactionAction   func(T) (int64, error)                       // Returns comment ID to react to
+	ReactionComplete func(commentID int64, emoji string) (string, error) // Applies reaction, returns confirmation message
+	ReactionKey      string                                       // e.g., "x react"
 }
 
 // SelectionModel is the tea.Model for interactive selection
@@ -148,6 +153,11 @@ type SelectionModel[T any] struct {
 	commentSelectItem     listItem[T] // the item being operated on
 	commentSelectStatus   string      // status message to display during selection
 	commentSelectInDetail bool        // true if selection was triggered from detail view
+
+	// Reaction mode state (for cycling through emoji reactions)
+	reactionMode      bool  // true when cycling through reactions
+	reactionIdx       int   // current emoji index (0-7)
+	reactionCommentID int64 // comment ID to react to
 }
 
 // listItem wraps a generic item for the list model

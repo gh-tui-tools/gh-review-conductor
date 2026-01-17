@@ -21,6 +21,7 @@ Most actions (Q, C, r/u, R/U, a, e, o) work in both views. Some are view-specifi
 - **Confirmation Dialog** — Success feedback after posting comments
 - **Coding Agent** — Launch a coding agent with the review comment context (`a` key)
 - **Edit File** — Open the commented file in your editor at the exact line (`e` key)
+- **Emoji Reactions** — Add emoji reactions to review comments (`x` key)
 
 ---
 
@@ -482,6 +483,127 @@ The editor is launched with the `+line` convention (e.g., `vim +42 file.go`) to 
 
 ---
 
+## Emoji Reactions Feature
+
+Pressing `x` allows you to add emoji reactions to review comments. This provides a quick way to acknowledge comments without typing a full reply.
+
+### Supported Emojis
+
+GitHub supports 8 emoji reactions:
+
+| Emoji | Name |
+|-------|------|
+| 👍 | +1 |
+| 👎 | -1 |
+| 😄 | laugh |
+| 😕 | confused |
+| ❤️ | heart |
+| 🎉 | hooray |
+| 🚀 | rocket |
+| 👀 | eyes |
+
+### User Flow
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  User in List View or Detail View                                 │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  User presses 'x'     │
+                    └───────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+                    ▼                       ▼
+        ┌───────────────────┐   ┌───────────────────┐
+        │ Single comment    │   │ Multi-comment     │
+        │ thread            │   │ thread            │
+        └───────────────────┘   └───────────────────┘
+                    │                       │
+                    │                       ▼
+                    │           ┌───────────────────┐
+                    │           │ Enter comment     │
+                    │           │ selection mode    │
+                    │           │ (x=cycle, Enter)  │
+                    │           └───────────────────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  Enter reaction mode  │
+                    │  Status bar shows:    │
+                    │  React: [1/8] +1      │
+                    │  (x=next, Enter=add,  │
+                    │   Esc=cancel)         │
+                    └───────────────────────┘
+                                │
+            ┌───────────────────┼───────────────────┐
+            │                   │                   │
+            ▼                   ▼                   ▼
+    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+    │ Press 'x'    │    │ Press Enter  │    │ Press Esc    │
+    │              │    │              │    │              │
+    └──────────────┘    └──────────────┘    └──────────────┘
+            │                   │                   │
+            ▼                   ▼                   ▼
+    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+    │ Cycle to     │    │ POST to      │    │ Cancel and   │
+    │ next emoji   │    │ GitHub API   │    │ return to    │
+    │ [2/8] -1...  │    │              │    │ normal view  │
+    └──────────────┘    └──────────────┘    └──────────────┘
+                                │
+                                ▼
+                        ┌──────────────┐
+                        │ Show success │
+                        │ "Added       │
+                        │ reaction: +1"│
+                        └──────────────┘
+```
+
+### GitHub API
+
+Reactions are added via the GitHub REST API:
+
+```
+POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions
+Content-Type: application/json
+
+{"content": "+1"}
+```
+
+### Implementation
+
+The reaction feature uses a modal state similar to comment selection mode:
+
+```go
+// Reaction mode state in SelectionModel
+reactionMode      bool   // true when cycling through reactions
+reactionIdx       int    // current emoji index (0-7)
+reactionCommentID int64  // comment ID to react to
+```
+
+The `SelectorOptions` struct includes reaction callbacks:
+
+```go
+// Action: x (add reaction)
+ReactionAction   func(T) (int64, error)                       // Returns comment ID
+ReactionComplete func(commentID int64, emoji string) (string, error) // Applies reaction, returns confirmation message
+ReactionKey      string                                       // e.g., "x react"
+```
+
+### Confirmation Dialog
+
+After successfully adding a reaction, a confirmation dialog is shown with the message returned by `ReactionComplete` (typically including a link to the comment on GitHub). The user presses any key to dismiss the dialog and return to the browse view.
+
+### Integration with Thread Selection
+
+For comments with replies, pressing `x` first enters comment selection mode (same as Q/C/a), allowing you to choose which specific comment to react to. After selecting, reaction mode begins.
+
+---
+
 ## Editor Action Architecture
 
 ### Problem
@@ -691,6 +813,7 @@ This avoids regex recompilation overhead on each call to functions like `StripSu
 | `U` | Both | Unresolve + comment (shown when resolved) |
 | `a` | Both | Launch coding agent with comment context |
 | `e` | Both | Open file in editor at comment line |
+| `x` | Both | Add emoji reaction to comment |
 | `i` | List view | Refresh (fetch new comments from GitHub) |
 | `o` | Both | Open in browser |
 | `enter` | List view | Show detail view |
@@ -752,6 +875,11 @@ type SelectorOptions[T any] struct {
     // Action: e (edit file)
     EditAction CustomAction[T]
     EditKey    string // e.g., "e edit"
+
+    // Action: x (add reaction)
+    ReactionAction   func(T) (int64, error)                       // Returns comment ID
+    ReactionComplete func(commentID int64, emoji string) (string, error) // Applies reaction, returns confirmation message
+    ReactionKey      string                                       // e.g., "x react"
 }
 ```
 
@@ -783,6 +911,10 @@ selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{
 
     AgentAction: agentAction,
     AgentKey:    "a agent",
+
+    ReactionAction:   reactionAction,
+    ReactionComplete: reactionComplete,
+    ReactionKey:      "x react",
 })
 ```
 
@@ -834,10 +966,11 @@ This matches the style used by the GitHub web UI for comment timestamps.
 |------|---------|
 | `pkg/ui/quote.go` | **New** - `FormatQuotedReply()`, `FormatBlockquote()` |
 | `pkg/ui/colors.go` | Added `FormatDiffWithHeaders()`, `TruncateDiff()`, `FormatRelativeTime()`, `ColorMagenta`, cached markdown renderer (`cachedMarkdownRenderer`, `getMarkdownRenderer()`) |
-| `pkg/ui/selector.go` | **Refactored to `SelectorOptions[T]` struct** replacing 29+ positional parameters with named fields. Editor action system, confirmation dialog, Q/C handlers, loading indicator, sticky footer, `loadDetailMsg` type, dynamic resolve/unresolve keys (`u`/`U`), `isItemResolved` callback, `refreshItems` callback, `i` key refresh handler, `a` key agent launcher, `launchAgent()` method, `agentFinishedMsg` type, `e` key edit file handler, thread comment selection state (`commentSelectMode`, `commentSelectIdx`, etc.), `PreviewWithHighlight` interface method |
-| `cmd/browse.go` | Editor prepare/complete functions, optimistic reply updates, URL/timestamp display in details, refresh callback for `i` key, `agentAction` for launching coding agent, `editAction` for opening file in editor, `SelectedCommentIdx` field in `BrowseItem`, `openURLInBrowser()` helper, removed redundant API calls for caching |
+| `pkg/ui/selector.go` | **Refactored to `SelectorOptions[T]` struct** replacing 29+ positional parameters with named fields. Editor action system, confirmation dialog, Q/C handlers, loading indicator, sticky footer, `loadDetailMsg` type, dynamic resolve/unresolve keys (`u`/`U`), `isItemResolved` callback, `refreshItems` callback, `i` key refresh handler, `a` key agent launcher, `launchAgent()` method, `agentFinishedMsg` type, `e` key edit file handler, thread comment selection state (`commentSelectMode`, `commentSelectIdx`, etc.), `PreviewWithHighlight` interface method, reaction mode state (`reactionMode`, `reactionIdx`, `reactionCommentID`), `ReactionAction`/`ReactionComplete`/`ReactionKey` options |
+| `pkg/ui/selector_nocov.go` | Added `reactionEmojis` constant, `x` key handler for reaction mode, `enterReactionMode()` and `showReactionStatus()` helper methods, reaction mode handling in Update loop |
+| `cmd/browse.go` | Editor prepare/complete functions, optimistic reply updates, URL/timestamp display in details, refresh callback for `i` key, `agentAction` for launching coding agent, `editAction` for opening file in editor, `SelectedCommentIdx` field in `BrowseItem`, `openURLInBrowser()` helper, removed redundant API calls for caching, `reactionAction` and `reactionComplete` callbacks for emoji reactions |
 | `cmd/comment.go` | Uses shared `SanitizeEditorContent()` |
-| `pkg/github/client.go` | Fixed `-f` to `-F` for file reading in `gh api`, added `CreatedAt` field to `ReviewComment` and `ThreadComment` structs |
+| `pkg/github/client.go` | Fixed `-f` to `-F` for file reading in `gh api`, added `CreatedAt` field to `ReviewComment` and `ThreadComment` structs, added `AddReactionToComment()` method for adding emoji reactions to review comments |
 
 ---
 

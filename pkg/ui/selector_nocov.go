@@ -15,6 +15,21 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// reactionEmojis defines the available emoji reactions for GitHub comments
+var reactionEmojis = []struct {
+	name    string
+	display string
+}{
+	{"+1", "+1"},
+	{"-1", "-1"},
+	{"laugh", "laugh"},
+	{"confused", "confused"},
+	{"heart", "heart"},
+	{"hooray", "hooray"},
+	{"rocket", "rocket"},
+	{"eyes", "eyes"},
+}
+
 // SelectFromList creates an interactive selector for a list of items.
 // For more options, use Select() with SelectorOptions.
 func SelectFromList[T any](items []T, renderer ItemRenderer[T]) (T, error) {
@@ -152,6 +167,37 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle reaction mode
+		if m.reactionMode {
+			switch msg.String() {
+			case "enter":
+				// Add the reaction
+				emoji := reactionEmojis[m.reactionIdx].name
+				m.reactionMode = false
+				if m.opts.ReactionComplete != nil {
+					msg, err := m.opts.ReactionComplete(m.reactionCommentID, emoji)
+					if err != nil {
+						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					// Show confirmation dialog with the result
+					m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", msg)
+					return m, nil
+				}
+				return m, nil
+			case "esc":
+				m.reactionMode = false
+				return m, m.list.NewStatusMessage("Reaction cancelled")
+			case "x":
+				// Cycle to next emoji
+				m.reactionIdx = (m.reactionIdx + 1) % len(reactionEmojis)
+				return m, m.showReactionStatus()
+			default:
+				// Any other key cancels reaction mode
+				m.reactionMode = false
+				return m, m.list.NewStatusMessage("Reaction cancelled")
+			}
+		}
+
 		// Handle comment selection mode
 		if m.commentSelectMode {
 			switch msg.String() {
@@ -169,7 +215,7 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, m.list.NewStatusMessage("Selection cancelled")
-			case "Q", "C", "a":
+			case "Q", "C", "a", "x":
 				if msg.String() == m.commentSelectAction {
 					m.cycleCommentSelection()
 					if m.commentSelectInDetail {
@@ -245,71 +291,13 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "Q":
 				// Quote reply from detail view
-				if m.opts.QuotePrepare != nil {
-					selected := m.list.SelectedItem()
-					if selected != nil {
-						item := selected.(listItem[T])
-						// Check if this item has multiple comments in thread
-						count := m.opts.Renderer.ThreadCommentCount(item.value)
-						if count > 1 {
-							m.enterCommentSelectMode("Q", item)
-							m.commentSelectInDetail = true
-							m.updateDetailViewWithHighlight()
-							return m, m.showCommentSelectStatus()
-						}
-						m.showDetail = false
-						return m, m.startEditorForAction(item.value, 3)
-					}
-				}
-				return m, nil
+				return m.handleQuoteKey(true)
 			case "C":
 				// Quote with context from detail view
-				if m.opts.QuoteContextPrepare != nil {
-					selected := m.list.SelectedItem()
-					if selected != nil {
-						item := selected.(listItem[T])
-						// Check if this item has multiple comments in thread
-						count := m.opts.Renderer.ThreadCommentCount(item.value)
-						if count > 1 {
-							m.enterCommentSelectMode("C", item)
-							m.commentSelectInDetail = true
-							m.updateDetailViewWithHighlight()
-							return m, m.showCommentSelectStatus()
-						}
-						m.showDetail = false
-						return m, m.startEditorForAction(item.value, 4)
-					}
-				}
-				return m, nil
+				return m.handleQuoteContextKey(true)
 			case "a":
 				// Launch agent from detail view
-				if m.opts.AgentAction != nil {
-					selected := m.list.SelectedItem()
-					if selected != nil {
-						item := selected.(listItem[T])
-						// Check if this item has multiple comments in thread
-						count := m.opts.Renderer.ThreadCommentCount(item.value)
-						if count > 1 {
-							m.enterCommentSelectMode("a", item)
-							m.commentSelectInDetail = true
-							m.updateDetailViewWithHighlight()
-							return m, m.showCommentSelectStatus()
-						}
-						result, err := m.opts.AgentAction(item.value)
-						if err != nil {
-							return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
-						}
-						if strings.HasPrefix(result, "LAUNCH_AGENT:") {
-							prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
-							m.showDetail = false
-							return m, m.launchAgent(prompt)
-						}
-						if result != "" {
-							return m, m.list.NewStatusMessage(result)
-						}
-					}
-				}
-				return m, nil
+				return m.handleAgentKey(true)
 			case "e":
 				// Edit file from detail view
 				if m.opts.EditAction != nil {
@@ -334,6 +322,9 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
+			case "x":
+				// Add reaction from detail view
+				return m.handleReactionKey(true)
 			case "o":
 				// Open in browser from detail view
 				if m.opts.OnOpen != nil {
@@ -452,62 +443,13 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "Q":
 			// Execute quote action with editor
-			if m.opts.QuotePrepare != nil {
-				selected := m.list.SelectedItem()
-				if selected != nil {
-					item := selected.(listItem[T])
-					// Check if this item has multiple comments in thread
-					count := m.opts.Renderer.ThreadCommentCount(item.value)
-					if count > 1 {
-						m.enterCommentSelectMode("Q", item)
-						return m, m.showCommentSelectStatus()
-					}
-					return m, m.startEditorForAction(item.value, 3)
-				}
-			}
-			return m, nil
+			return m.handleQuoteKey(false)
 		case "C":
 			// Execute quote with context action with editor
-			if m.opts.QuoteContextPrepare != nil {
-				selected := m.list.SelectedItem()
-				if selected != nil {
-					item := selected.(listItem[T])
-					// Check if this item has multiple comments in thread
-					count := m.opts.Renderer.ThreadCommentCount(item.value)
-					if count > 1 {
-						m.enterCommentSelectMode("C", item)
-						return m, m.showCommentSelectStatus()
-					}
-					return m, m.startEditorForAction(item.value, 4)
-				}
-			}
-			return m, nil
+			return m.handleQuoteContextKey(false)
 		case "a":
 			// Execute agent action
-			if m.opts.AgentAction != nil {
-				selected := m.list.SelectedItem()
-				if selected != nil {
-					item := selected.(listItem[T])
-					// Check if this item has multiple comments in thread
-					count := m.opts.Renderer.ThreadCommentCount(item.value)
-					if count > 1 {
-						m.enterCommentSelectMode("a", item)
-						return m, m.showCommentSelectStatus()
-					}
-					result, err := m.opts.AgentAction(item.value)
-					if err != nil {
-						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
-					}
-					if strings.HasPrefix(result, "LAUNCH_AGENT:") {
-						prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
-						return m, m.launchAgent(prompt)
-					}
-					if result != "" {
-						return m, m.list.NewStatusMessage(result)
-					}
-				}
-			}
-			return m, nil
+			return m.handleAgentKey(false)
 		case "e":
 			// Execute edit action
 			if m.opts.EditAction != nil {
@@ -533,6 +475,9 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "x":
+			// Add reaction
+			return m.handleReactionKey(false)
 		}
 	}
 
@@ -759,14 +704,23 @@ func (m SelectionModel[T]) View() string {
 			key, _ := splitActionKey(m.opts.EditKey)
 			actions = append(actions, key+":edit")
 		}
+		if m.opts.ReactionAction != nil {
+			key, _ := splitActionKey(m.opts.ReactionKey)
+			actions = append(actions, key+":react")
+		}
 		if m.opts.OnOpen != nil {
 			actions = append(actions, "o:open")
 		}
 		actions = append(actions, "ctrl+f/b:scroll")
 
-		// Show comment selection status if active
+		// Show comment selection or reaction mode status if active
 		var header string
-		if m.commentSelectMode && m.commentSelectInDetail {
+		if m.reactionMode {
+			emoji := reactionEmojis[m.reactionIdx]
+			reactionStatus := fmt.Sprintf("React: [%d/%d] %s (x=next, Enter=add, Esc=cancel)",
+				m.reactionIdx+1, len(reactionEmojis), emoji.display)
+			header = titleStyle.Render("Detail View") + "  " + helpStyle.Render(reactionStatus)
+		} else if m.commentSelectMode && m.commentSelectInDetail {
 			header = titleStyle.Render("Detail View") + "  " + helpStyle.Render(m.commentSelectStatus)
 		} else {
 			header = titleStyle.Render("Detail View") + "  " + helpStyle.Render(strings.Join(actions, " | "))
@@ -822,6 +776,10 @@ func (m SelectionModel[T]) View() string {
 		key, _ := splitActionKey(m.opts.EditKey)
 		actions = append(actions, key+":edit")
 	}
+	if m.opts.ReactionAction != nil {
+		key, _ := splitActionKey(m.opts.ReactionKey)
+		actions = append(actions, key+":react")
+	}
 	if m.opts.OnOpen != nil {
 		actions = append(actions, "o:open")
 	}
@@ -836,9 +794,14 @@ func (m SelectionModel[T]) View() string {
 
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 
-	// Show comment selection status if active
+	// Show comment selection or reaction status if active
 	var footer string
-	if m.commentSelectMode && !m.commentSelectInDetail {
+	if m.reactionMode {
+		emoji := reactionEmojis[m.reactionIdx]
+		reactionStatus := fmt.Sprintf("React: [%d/%d] %s (x=next, Enter=add, Esc=cancel)",
+			m.reactionIdx+1, len(reactionEmojis), emoji.display)
+		footer = helpStyle.Render(reactionStatus)
+	} else if m.commentSelectMode && !m.commentSelectInDetail {
 		footer = helpStyle.Render(m.commentSelectStatus)
 	} else if m.refreshing {
 		footer = helpStyle.Render("Refreshing...")
@@ -948,6 +911,10 @@ Actions:`
 	}
 	if m.opts.EditAction != nil {
 		key, desc := splitActionKey(m.opts.EditKey)
+		helpText += fmt.Sprintf("\n  %-12s %s", key, desc)
+	}
+	if m.opts.ReactionAction != nil {
+		key, desc := splitActionKey(m.opts.ReactionKey)
 		helpText += fmt.Sprintf("\n  %-12s %s", key, desc)
 	}
 	if m.opts.OnOpen != nil {
@@ -1104,6 +1071,146 @@ func (m *SelectionModel[T]) exitCommentSelectMode() {
 	m.commentSelectStatus = ""
 }
 
+// handleQuoteKey handles the 'Q' key for quote reply, used by both list and detail views
+func (m *SelectionModel[T]) handleQuoteKey(inDetailView bool) (tea.Model, tea.Cmd) {
+	if m.opts.QuotePrepare == nil {
+		return m, nil
+	}
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return m, nil
+	}
+
+	item := selected.(listItem[T])
+	count := m.opts.Renderer.ThreadCommentCount(item.value)
+
+	if count > 1 {
+		m.enterCommentSelectMode("Q", item)
+		if inDetailView {
+			m.commentSelectInDetail = true
+			m.updateDetailViewWithHighlight()
+		}
+		return m, m.showCommentSelectStatus()
+	}
+
+	if inDetailView {
+		m.showDetail = false
+	}
+	return m, m.startEditorForAction(item.value, 3)
+}
+
+// handleQuoteContextKey handles the 'C' key for quote with context, used by both list and detail views
+func (m *SelectionModel[T]) handleQuoteContextKey(inDetailView bool) (tea.Model, tea.Cmd) {
+	if m.opts.QuoteContextPrepare == nil {
+		return m, nil
+	}
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return m, nil
+	}
+
+	item := selected.(listItem[T])
+	count := m.opts.Renderer.ThreadCommentCount(item.value)
+
+	if count > 1 {
+		m.enterCommentSelectMode("C", item)
+		if inDetailView {
+			m.commentSelectInDetail = true
+			m.updateDetailViewWithHighlight()
+		}
+		return m, m.showCommentSelectStatus()
+	}
+
+	if inDetailView {
+		m.showDetail = false
+	}
+	return m, m.startEditorForAction(item.value, 4)
+}
+
+// handleAgentKey handles the 'a' key for agent action, used by both list and detail views
+func (m *SelectionModel[T]) handleAgentKey(inDetailView bool) (tea.Model, tea.Cmd) {
+	if m.opts.AgentAction == nil {
+		return m, nil
+	}
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return m, nil
+	}
+
+	item := selected.(listItem[T])
+	count := m.opts.Renderer.ThreadCommentCount(item.value)
+
+	if count > 1 {
+		m.enterCommentSelectMode("a", item)
+		if inDetailView {
+			m.commentSelectInDetail = true
+			m.updateDetailViewWithHighlight()
+		}
+		return m, m.showCommentSelectStatus()
+	}
+
+	result, err := m.opts.AgentAction(item.value)
+	if err != nil {
+		return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+	}
+	if strings.HasPrefix(result, "LAUNCH_AGENT:") {
+		prompt := strings.TrimPrefix(result, "LAUNCH_AGENT:")
+		if inDetailView {
+			m.showDetail = false
+		}
+		return m, m.launchAgent(prompt)
+	}
+	if result != "" {
+		return m, m.list.NewStatusMessage(result)
+	}
+	return m, nil
+}
+
+// handleReactionKey handles the 'x' key to add reactions, used by both list and detail views
+func (m *SelectionModel[T]) handleReactionKey(inDetailView bool) (tea.Model, tea.Cmd) {
+	if m.opts.ReactionAction == nil {
+		return m, nil
+	}
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return m, nil
+	}
+
+	item := selected.(listItem[T])
+	count := m.opts.Renderer.ThreadCommentCount(item.value)
+
+	if count > 1 && (!inDetailView || (inDetailView && !m.commentSelectMode)) {
+		m.enterCommentSelectMode("x", item)
+		if inDetailView {
+			m.commentSelectInDetail = true
+			m.updateDetailViewWithHighlight()
+		}
+		return m, m.showCommentSelectStatus()
+	}
+
+	commentID, err := m.opts.ReactionAction(item.value)
+	if err != nil {
+		return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+	}
+	m.enterReactionMode(commentID)
+	return m, m.showReactionStatus()
+}
+
+// enterReactionMode starts reaction selection for the given comment
+func (m *SelectionModel[T]) enterReactionMode(commentID int64) {
+	m.reactionMode = true
+	m.reactionIdx = 0
+	m.reactionCommentID = commentID
+}
+
+// showReactionStatus returns a command to display the current reaction selection status
+func (m *SelectionModel[T]) showReactionStatus() tea.Cmd {
+	emoji := reactionEmojis[m.reactionIdx]
+	msg := fmt.Sprintf("React: [%d/%d] %s (x=next, Enter=add, Esc=cancel)",
+		m.reactionIdx+1, len(reactionEmojis), emoji.display)
+	return m.list.NewStatusMessage(msg)
+}
+
 // updateDetailViewWithHighlight updates the detail view to highlight the currently selected comment
 func (m *SelectionModel[T]) updateDetailViewWithHighlight() {
 	if !m.showDetail {
@@ -1150,6 +1257,15 @@ func (m *SelectionModel[T]) executeCommentAction() (tea.Model, tea.Cmd) {
 			if result != "" {
 				return m, m.list.NewStatusMessage(result)
 			}
+		}
+	case "x":
+		if m.opts.ReactionAction != nil {
+			commentID, err := m.opts.ReactionAction(itemWithSelection)
+			if err != nil {
+				return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+			}
+			m.enterReactionMode(commentID)
+			return m, m.showReactionStatus()
 		}
 	}
 

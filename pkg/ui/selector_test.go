@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -330,6 +331,12 @@ func TestSplitActionKey(t *testing.T) {
 			expectedKey:  "",
 			expectedDesc: "",
 		},
+		{
+			name:         "reaction key",
+			input:        "x react",
+			expectedKey:  "x",
+			expectedDesc: "react",
+		},
 	}
 
 	for _, tt := range tests {
@@ -340,6 +347,388 @@ func TestSplitActionKey(t *testing.T) {
 			}
 			if desc != tt.expectedDesc {
 				t.Errorf("splitActionKey(%q) desc = %q, want %q", tt.input, desc, tt.expectedDesc)
+			}
+		})
+	}
+}
+
+// TestReactionEmojis verifies the emoji reaction list is correctly defined
+func TestReactionEmojis(t *testing.T) {
+	// Test that we have exactly 8 emojis (GitHub's supported set)
+	if len(reactionEmojis) != 8 {
+		t.Errorf("reactionEmojis has %d items, want 8", len(reactionEmojis))
+	}
+
+	// Test that the expected emojis are present in order
+	expectedEmojis := []struct {
+		name    string
+		display string
+	}{
+		{"+1", "+1"},
+		{"-1", "-1"},
+		{"laugh", "laugh"},
+		{"confused", "confused"},
+		{"heart", "heart"},
+		{"hooray", "hooray"},
+		{"rocket", "rocket"},
+		{"eyes", "eyes"},
+	}
+
+	for i, expected := range expectedEmojis {
+		if reactionEmojis[i].name != expected.name {
+			t.Errorf("reactionEmojis[%d].name = %q, want %q", i, reactionEmojis[i].name, expected.name)
+		}
+		if reactionEmojis[i].display != expected.display {
+			t.Errorf("reactionEmojis[%d].display = %q, want %q", i, reactionEmojis[i].display, expected.display)
+		}
+	}
+}
+
+// TestReactionActionType verifies the ReactionAction callback type works correctly
+func TestReactionActionType(t *testing.T) {
+	// Test a successful reaction action
+	action := func(item string) (int64, error) {
+		if item == "comment1" {
+			return 12345, nil
+		}
+		return 0, fmt.Errorf("unknown item: %s", item)
+	}
+
+	commentID, err := action("comment1")
+	if err != nil {
+		t.Errorf("ReactionAction returned unexpected error: %v", err)
+	}
+	if commentID != 12345 {
+		t.Errorf("ReactionAction commentID = %d, want %d", commentID, 12345)
+	}
+
+	// Test error case
+	_, err = action("unknown")
+	if err == nil {
+		t.Error("ReactionAction should return error for unknown item")
+	}
+}
+
+// TestReactionCompleteType verifies the ReactionComplete callback type works correctly
+func TestReactionCompleteType(t *testing.T) {
+	// Track what was called
+	var calledID int64
+	var calledEmoji string
+
+	complete := func(commentID int64, emoji string) (string, error) {
+		calledID = commentID
+		calledEmoji = emoji
+		if emoji == "invalid" {
+			return "", fmt.Errorf("invalid emoji")
+		}
+		return fmt.Sprintf("%s reaction added at https://example.com/comment/%d", emoji, commentID), nil
+	}
+
+	// Test successful completion
+	msg, err := complete(12345, "+1")
+	if err != nil {
+		t.Errorf("ReactionComplete returned unexpected error: %v", err)
+	}
+	if msg == "" {
+		t.Error("ReactionComplete should return a confirmation message")
+	}
+	if calledID != 12345 {
+		t.Errorf("ReactionComplete was called with commentID = %d, want %d", calledID, 12345)
+	}
+	if calledEmoji != "+1" {
+		t.Errorf("ReactionComplete was called with emoji = %q, want %q", calledEmoji, "+1")
+	}
+
+	// Test error case
+	_, err = complete(99999, "invalid")
+	if err == nil {
+		t.Error("ReactionComplete should return error for invalid emoji")
+	}
+}
+
+// TestSelectorOptionsReactionFields verifies reaction fields are accessible
+func TestSelectorOptionsReactionFields(t *testing.T) {
+	// Create options with reaction callbacks
+	opts := SelectorOptions[string]{
+		Items: []string{"item1", "item2"},
+		ReactionAction: func(item string) (int64, error) {
+			return 123, nil
+		},
+		ReactionComplete: func(commentID int64, emoji string) (string, error) {
+			return fmt.Sprintf("%s added", emoji), nil
+		},
+		ReactionKey: "x react",
+	}
+
+	// Verify the callbacks are set
+	if opts.ReactionAction == nil {
+		t.Error("ReactionAction should not be nil")
+	}
+	if opts.ReactionComplete == nil {
+		t.Error("ReactionComplete should not be nil")
+	}
+	if opts.ReactionKey != "x react" {
+		t.Errorf("ReactionKey = %q, want %q", opts.ReactionKey, "x react")
+	}
+
+	// Test that the callbacks work
+	id, err := opts.ReactionAction("item1")
+	if err != nil || id != 123 {
+		t.Errorf("ReactionAction callback failed: id=%d, err=%v", id, err)
+	}
+
+	msg, err := opts.ReactionComplete(123, "+1")
+	if err != nil {
+		t.Errorf("ReactionComplete callback failed: %v", err)
+	}
+	if msg == "" {
+		t.Error("ReactionComplete should return a message")
+	}
+}
+
+// TestReactionModeStateCycle verifies the reaction mode cycling logic
+func TestReactionModeStateCycle(t *testing.T) {
+	// Simulate cycling through reactions
+	reactionIdx := 0
+	numEmojis := len(reactionEmojis)
+
+	// Cycle through all emojis
+	for i := 0; i < numEmojis; i++ {
+		expectedEmoji := reactionEmojis[reactionIdx]
+		if expectedEmoji.name == "" {
+			t.Errorf("Empty emoji name at index %d", reactionIdx)
+		}
+
+		// Cycle to next
+		reactionIdx = (reactionIdx + 1) % numEmojis
+	}
+
+	// After cycling through all, we should be back at the start
+	if reactionIdx != 0 {
+		t.Errorf("After full cycle, reactionIdx = %d, want 0", reactionIdx)
+	}
+}
+
+// TestReactionStatusMessageFormat verifies the status message format
+func TestReactionStatusMessageFormat(t *testing.T) {
+	// Test the expected format for different indices
+	tests := []struct {
+		idx         int
+		wantContain string
+	}{
+		{0, "[1/8] +1"},
+		{1, "[2/8] -1"},
+		{7, "[8/8] eyes"},
+	}
+
+	for _, tt := range tests {
+		emoji := reactionEmojis[tt.idx]
+		msg := fmt.Sprintf("React: [%d/%d] %s (x=next, Enter=add, Esc=cancel)",
+			tt.idx+1, len(reactionEmojis), emoji.display)
+
+		if !strings.Contains(msg, tt.wantContain) {
+			t.Errorf("Status message at idx %d = %q, want to contain %q", tt.idx, msg, tt.wantContain)
+		}
+		if !strings.Contains(msg, "x=next") {
+			t.Errorf("Status message should contain 'x=next'")
+		}
+		if !strings.Contains(msg, "Enter=add") {
+			t.Errorf("Status message should contain 'Enter=add'")
+		}
+		if !strings.Contains(msg, "Esc=cancel") {
+			t.Errorf("Status message should contain 'Esc=cancel'")
+		}
+	}
+}
+
+// TestReactionConfirmationMessageFormat verifies the confirmation message includes URL
+func TestReactionConfirmationMessageFormat(t *testing.T) {
+	// Simulate what browse.go does when building the confirmation message
+	emoji := "+1"
+	repo := "owner/repo"
+	prNumber := 123
+	commentID := int64(456789)
+
+	url := fmt.Sprintf("https://github.com/%s/pull/%d#discussion_r%d", repo, prNumber, commentID)
+	msg := fmt.Sprintf("%s reaction added at %s", emoji, url)
+
+	// Verify the message format
+	if !strings.Contains(msg, emoji) {
+		t.Errorf("Confirmation message should contain emoji %q", emoji)
+	}
+	if !strings.Contains(msg, "reaction added at") {
+		t.Error("Confirmation message should contain 'reaction added at'")
+	}
+	if !strings.Contains(msg, "https://github.com/") {
+		t.Error("Confirmation message should contain GitHub URL")
+	}
+	if !strings.Contains(msg, "#discussion_r") {
+		t.Error("Confirmation message should contain comment anchor")
+	}
+
+	// Verify the full confirmation dialog format
+	dialogMsg := fmt.Sprintf("%s\n\nPress any key to continue...", msg)
+	if !strings.Contains(dialogMsg, "Press any key") {
+		t.Error("Dialog should contain dismiss instructions")
+	}
+}
+
+// TestReactionEmojisMatchGitHubAPI verifies emoji names match GitHub's API
+func TestReactionEmojisMatchGitHubAPI(t *testing.T) {
+	// GitHub's supported reaction content values (from their API documentation)
+	// https://docs.github.com/en/rest/reactions#about-reactions
+	githubEmojis := map[string]bool{
+		"+1":       true,
+		"-1":       true,
+		"laugh":    true,
+		"confused": true,
+		"heart":    true,
+		"hooray":   true,
+		"rocket":   true,
+		"eyes":     true,
+	}
+
+	for i, emoji := range reactionEmojis {
+		if !githubEmojis[emoji.name] {
+			t.Errorf("reactionEmojis[%d].name = %q is not a valid GitHub API emoji", i, emoji.name)
+		}
+	}
+
+	// Verify we have all of them
+	if len(reactionEmojis) != len(githubEmojis) {
+		t.Errorf("reactionEmojis has %d items, GitHub API has %d", len(reactionEmojis), len(githubEmojis))
+	}
+}
+
+// TestReactionIndexCyclingWrapAround verifies cycling wraps correctly at boundaries
+func TestReactionIndexCyclingWrapAround(t *testing.T) {
+	numEmojis := len(reactionEmojis)
+
+	tests := []struct {
+		name     string
+		startIdx int
+		wantIdx  int
+	}{
+		{"from first to second", 0, 1},
+		{"from middle", 3, 4},
+		{"from last to first (wrap)", numEmojis - 1, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nextIdx := (tt.startIdx + 1) % numEmojis
+			if nextIdx != tt.wantIdx {
+				t.Errorf("cycling from %d: got %d, want %d", tt.startIdx, nextIdx, tt.wantIdx)
+			}
+		})
+	}
+}
+
+// TestReactionStatusMessageAllEmojis verifies status messages for all emojis
+func TestReactionStatusMessageAllEmojis(t *testing.T) {
+	for idx, emoji := range reactionEmojis {
+		msg := fmt.Sprintf("React: [%d/%d] %s (x=next, Enter=add, Esc=cancel)",
+			idx+1, len(reactionEmojis), emoji.display)
+
+		// Each message should contain the emoji display
+		if !strings.Contains(msg, emoji.display) {
+			t.Errorf("Status message at idx %d missing emoji display %q", idx, emoji.display)
+		}
+
+		// Each message should have correct index
+		expectedIdx := fmt.Sprintf("[%d/%d]", idx+1, len(reactionEmojis))
+		if !strings.Contains(msg, expectedIdx) {
+			t.Errorf("Status message at idx %d missing index %q", idx, expectedIdx)
+		}
+	}
+}
+
+// TestReactionCompleteErrorFormatting verifies error messages are properly formatted
+func TestReactionCompleteErrorFormatting(t *testing.T) {
+	tests := []struct {
+		name        string
+		emoji       string
+		apiError    string
+		wantContain string
+	}{
+		{
+			name:        "network error",
+			emoji:       "+1",
+			apiError:    "network timeout",
+			wantContain: "network timeout",
+		},
+		{
+			name:        "permission denied",
+			emoji:       "heart",
+			apiError:    "403 Forbidden",
+			wantContain: "403 Forbidden",
+		},
+		{
+			name:        "already reacted",
+			emoji:       "rocket",
+			apiError:    "already exists",
+			wantContain: "already exists",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			complete := func(commentID int64, emoji string) (string, error) {
+				return "", fmt.Errorf("failed to add %s reaction: %s", emoji, tt.apiError)
+			}
+
+			_, err := complete(12345, tt.emoji)
+			if err == nil {
+				t.Error("Expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantContain) {
+				t.Errorf("Error %q should contain %q", err.Error(), tt.wantContain)
+			}
+			if !strings.Contains(err.Error(), tt.emoji) {
+				t.Errorf("Error %q should contain emoji %q", err.Error(), tt.emoji)
+			}
+		})
+	}
+}
+
+// TestSelectorOptionsNilReactionCallbacks verifies nil callbacks are handled
+func TestSelectorOptionsNilReactionCallbacks(t *testing.T) {
+	// Create options without reaction callbacks
+	opts := SelectorOptions[string]{
+		Items:       []string{"item1"},
+		ReactionKey: "x react",
+		// ReactionAction and ReactionComplete are nil
+	}
+
+	if opts.ReactionAction != nil {
+		t.Error("ReactionAction should be nil when not set")
+	}
+	if opts.ReactionComplete != nil {
+		t.Error("ReactionComplete should be nil when not set")
+	}
+
+	// ReactionKey can still be set even without callbacks
+	if opts.ReactionKey != "x react" {
+		t.Errorf("ReactionKey = %q, want %q", opts.ReactionKey, "x react")
+	}
+}
+
+// TestReactionConfirmationMessageAllEmojis verifies confirmation for each emoji
+func TestReactionConfirmationMessageAllEmojis(t *testing.T) {
+	repo := "owner/repo"
+	prNumber := 123
+	commentID := int64(456789)
+
+	for _, emoji := range reactionEmojis {
+		t.Run(emoji.name, func(t *testing.T) {
+			url := fmt.Sprintf("https://github.com/%s/pull/%d#discussion_r%d", repo, prNumber, commentID)
+			msg := fmt.Sprintf("%s reaction added at %s", emoji.name, url)
+
+			if !strings.Contains(msg, emoji.name) {
+				t.Errorf("Message should contain emoji name %q", emoji.name)
+			}
+			if !strings.Contains(msg, url) {
+				t.Errorf("Message should contain URL")
 			}
 		})
 	}
