@@ -76,10 +76,16 @@ func Select[T any](opts SelectorOptions[T]) (T, error) {
 	l.KeyMap.Quit.SetKeys()
 
 	m := SelectionModel[T]{
-		list:   l,
-		items:  opts.Items,
-		opts:   opts,
-		result: nil,
+		list:         l,
+		items:        opts.Items,
+		opts:         opts,
+		result:       nil,
+		filterActive: opts.FilterDefault,
+	}
+
+	// Apply initial filter if FilterDefault is true
+	if opts.FilterDefault && opts.FilterFunc != nil {
+		m.updateVisibleItems()
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -393,12 +399,13 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "tab":
+		case "h", "tab":
+			// Toggle filter (h = hide/show resolved, tab kept for compatibility)
 			if m.opts.FilterFunc != nil {
 				m.filterActive = !m.filterActive
 				m.updateVisibleItems()
 				if m.filterActive {
-					return m, m.list.NewStatusMessage("Showing unresolved only")
+					return m, m.list.NewStatusMessage("Hiding resolved")
 				}
 				return m, m.list.NewStatusMessage("Showing all")
 			}
@@ -789,7 +796,7 @@ func (m SelectionModel[T]) View() string {
 		actions = append(actions, "i:refresh")
 	}
 	if m.opts.FilterFunc != nil {
-		actions = append(actions, "tab:filter")
+		actions = append(actions, "h:hide resolved")
 	}
 	actions = append(actions, "?:help")
 	actions = append(actions, "q:quit")
@@ -883,10 +890,10 @@ func (m SelectionModel[T]) renderHelpOverlay() string {
 Navigation:
   ↑/↓, j/k     Move up/down
   enter, l, →  View detail / select
-  h, ←, esc    Go back
+  ←, esc       Go back (from detail)
   q            Quit (list) / Back (detail)
   /            Filter items
-  tab          Toggle resolved filter
+  h            Toggle hide resolved (list)
 
 Actions:`
 

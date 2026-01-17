@@ -80,6 +80,7 @@ type SelectorOptions[T any] struct {
 	OnSelect       CustomAction[T]     // Called when Enter is pressed
 	OnOpen         CustomAction[T]     // Called when 'o' is pressed
 	FilterFunc     func(T, bool) bool  // Filter items based on state
+	FilterDefault  bool                // Initial filter state (true = filter active, e.g., hide resolved)
 	IsItemResolved func(T) bool        // For dynamic key display (r vs u)
 	RefreshItems   func() ([]T, error) // Called when 'i' is pressed
 
