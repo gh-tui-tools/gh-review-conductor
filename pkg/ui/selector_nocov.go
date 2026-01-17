@@ -596,9 +596,11 @@ func (m SelectionModel[T]) handleEditorFinished(msg editorFinishedMsg) (tea.Mode
 		return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 	}
 
-	// Show confirmation dialog if we got a URL back
-	if strings.HasPrefix(result, "https://") {
-		m.confirmationMessage = fmt.Sprintf("Comment posted!\n\n%s\n\nPress any key to continue...", result)
+	// Show confirmation dialog if the result contains a URL
+	// This handles both simple URL returns (Q/C actions) and
+	// combined status+URL returns (R/U resolve+comment actions)
+	if strings.Contains(result, "https://") {
+		m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", result)
 		return m, nil
 	}
 

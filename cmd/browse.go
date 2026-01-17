@@ -211,9 +211,10 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 				return fmt.Sprintf("Posted comment %d", reply.ID), nil
 			}
 
-			// Show clickable hyperlink with full URL visible
+			// Return message with URL to trigger confirmation dialog
+			// (handleEditorFinished checks for strings.Contains(result, "https://"))
 			link := ui.CreateHyperlink(url, url)
-			return fmt.Sprintf("Posted a comment to:\n%s", link), nil
+			return fmt.Sprintf("Comment posted!\n\n%s", link), nil
 		}
 
 		// Editor actions for C (quote reply with context)
