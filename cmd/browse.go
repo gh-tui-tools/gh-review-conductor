@@ -321,6 +321,7 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			OnSelect:       onSelect,
 			OnOpen:         openAction,
 			FilterFunc:     filterFunc,
+			FilterDefault:  true, // Hide resolved comments by default
 			IsItemResolved: isItemResolved,
 			RefreshItems:   refreshItems,
 
