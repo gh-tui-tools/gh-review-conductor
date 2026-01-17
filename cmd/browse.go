@@ -133,11 +133,11 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 		onSelect := func(item BrowseItem) (string, error) {
 			if item.Type == "file" {
 				collapsedFiles[item.Path] = !collapsedFiles[item.Path]
-				return "", nil // Just refresh
+				return "", nil // Just toggle collapse
 			}
 
-			// Use cached data from initial fetch - no additional API calls
-			return "SHOW_DETAIL", nil
+			// Return empty string to allow detail view to open
+			return "", nil
 		}
 
 		// Editor actions for R (resolve with comment)
@@ -557,7 +557,9 @@ func (r *browseItemRenderer) Title(item BrowseItem) string {
 	}
 
 	if item.IsPreview {
-		// Show truncated body for preview item
+		// Show truncated body for preview item in gray
+		// Note: This works because IsSkippable returns false, so lipgloss
+		// won't re-style this text and interfere with the ANSI codes
 		body := ui.StripSuggestionBlock(item.Comment.Body)
 		lines := strings.Split(body, "\n")
 		preview := "..."
@@ -736,7 +738,9 @@ func (r *browseItemRenderer) FilterValue(item BrowseItem) string {
 }
 
 func (r *browseItemRenderer) IsSkippable(item BrowseItem) bool {
-	return item.IsPreview
+	// Preview items are supplementary info, not "skippable" in the sense of
+	// being invalid/crossed-out. Return false to avoid strikethrough styling.
+	return false
 }
 
 func (r *browseItemRenderer) ThreadCommentCount(item BrowseItem) int {
