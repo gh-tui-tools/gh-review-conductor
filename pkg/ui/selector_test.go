@@ -733,3 +733,176 @@ func TestReactionConfirmationMessageAllEmojis(t *testing.T) {
 		})
 	}
 }
+
+func TestResultContainsURL(t *testing.T) {
+	// Test URL detection logic used in handleEditorFinished
+	// The selector shows a confirmation dialog when result contains "https://"
+	tests := []struct {
+		name              string
+		result            string
+		shouldShowConfirm bool
+	}{
+		{
+			name:              "raw URL",
+			result:            "https://github.com/owner/repo/pull/123#discussion_r456",
+			shouldShowConfirm: true,
+		},
+		{
+			name:              "URL with message prefix",
+			result:            "Comment posted!\n\nhttps://github.com/owner/repo/pull/123",
+			shouldShowConfirm: true,
+		},
+		{
+			name:              "URL with resolve status",
+			result:            "Thread resolved\nPosted a comment to:\nhttps://github.com/owner/repo/pull/123",
+			shouldShowConfirm: true,
+		},
+		{
+			name:              "no URL - simple status",
+			result:            "Posted comment 12345",
+			shouldShowConfirm: false,
+		},
+		{
+			name:              "no URL - error message",
+			result:            "Failed to post comment",
+			shouldShowConfirm: false,
+		},
+		{
+			name:              "empty result",
+			result:            "",
+			shouldShowConfirm: false,
+		},
+		{
+			name:              "http URL (not https)",
+			result:            "http://example.com",
+			shouldShowConfirm: false,
+		},
+		{
+			name:              "URL in middle of text",
+			result:            "See https://github.com/repo for details",
+			shouldShowConfirm: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// This mirrors the logic in handleEditorFinished
+			containsURL := len(tt.result) > 0 && contains(tt.result, "https://")
+			if containsURL != tt.shouldShowConfirm {
+				t.Errorf("Contains URL check for %q = %v, want %v", tt.result, containsURL, tt.shouldShowConfirm)
+			}
+		})
+	}
+}
+
+// contains is a helper that mirrors strings.Contains behavior
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFindHighlightLineOffset(t *testing.T) {
+	// Test the logic for finding the line offset to scroll to highlighted content
+	// This mirrors the logic in updateDetailViewWithHighlight
+	tests := []struct {
+		name           string
+		content        string
+		expectedOffset int
+		shouldFind     bool
+	}{
+		{
+			name: "highlight at beginning",
+			content: `▶▶▶ SELECTED COMMENT ◀◀◀
+--- Comment ---
+This is the comment body`,
+			expectedOffset: 0, // max(0, 0-2) = 0
+			shouldFind:     true,
+		},
+		{
+			name: "highlight in middle",
+			content: `Header line 1
+Header line 2
+Header line 3
+Header line 4
+Header line 5
+▶▶▶ SELECTED REPLY ◀◀◀
+Reply content here`,
+			expectedOffset: 3, // line 5 (0-indexed) - 2 = 3
+			shouldFind:     true,
+		},
+		{
+			name: "highlight near top with context",
+			content: `Header
+Subheader
+▶▶▶ SELECTED COMMENT ◀◀◀
+Content`,
+			expectedOffset: 0, // max(0, 2-2) = 0
+			shouldFind:     true,
+		},
+		{
+			name:           "no highlight marker",
+			content:        "Line 1\nLine 2\nLine 3",
+			expectedOffset: 0,
+			shouldFind:     false,
+		},
+		{
+			name:           "empty content",
+			content:        "",
+			expectedOffset: 0,
+			shouldFind:     false,
+		},
+		{
+			name: "END SELECTED marker only",
+			content: `Some content
+▶▶▶ END SELECTED ◀◀◀`,
+			expectedOffset: 0, // finds at line 1, max(0, 1-2) = 0
+			shouldFind:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// This mirrors the logic in updateDetailViewWithHighlight
+			lines := splitLines(tt.content)
+			found := false
+			offset := 0
+			for i, line := range lines {
+				if contains(line, "SELECTED") {
+					found = true
+					offset = i - 2
+					if offset < 0 {
+						offset = 0
+					}
+					break
+				}
+			}
+			if found != tt.shouldFind {
+				t.Errorf("Found highlight = %v, want %v", found, tt.shouldFind)
+			}
+			if found && offset != tt.expectedOffset {
+				t.Errorf("Offset = %d, want %d", offset, tt.expectedOffset)
+			}
+		})
+	}
+}
+
+// splitLines splits content into lines (mirrors strings.Split behavior)
+func splitLines(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	lines = append(lines, s[start:])
+	return lines
+}

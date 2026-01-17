@@ -1220,6 +1220,22 @@ func (m *SelectionModel[T]) updateDetailViewWithHighlight() {
 	}
 	content := m.opts.Renderer.PreviewWithHighlight(m.commentSelectItem.value, m.commentSelectIdx)
 	m.viewport.SetContent(content)
+
+	// Scroll to make the highlighted section visible
+	// Look for the highlight marker and scroll to it
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "SELECTED") {
+			// Set Y offset so the highlighted line is near the top of the viewport
+			// Leave a few lines of context above if possible
+			offset := i - 2
+			if offset < 0 {
+				offset = 0
+			}
+			m.viewport.SetYOffset(offset)
+			break
+		}
+	}
 }
 
 // executeCommentAction runs the pending action with the selected comment
