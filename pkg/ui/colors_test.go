@@ -528,3 +528,95 @@ func TestFormatRelativeTime(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatReactions(t *testing.T) {
+	tests := []struct {
+		name     string
+		counts   ReactionCounts
+		expected string
+	}{
+		{
+			name:     "no reactions returns empty string",
+			counts:   ReactionCounts{},
+			expected: "",
+		},
+		{
+			name:     "single thumbs up",
+			counts:   ReactionCounts{PlusOne: 3},
+			expected: "👍 3",
+		},
+		{
+			name:     "single thumbs down",
+			counts:   ReactionCounts{MinusOne: 1},
+			expected: "👎 1",
+		},
+		{
+			name:     "single laugh",
+			counts:   ReactionCounts{Laugh: 5},
+			expected: "😄 5",
+		},
+		{
+			name:     "single hooray",
+			counts:   ReactionCounts{Hooray: 2},
+			expected: "🎉 2",
+		},
+		{
+			name:     "single confused",
+			counts:   ReactionCounts{Confused: 1},
+			expected: "😕 1",
+		},
+		{
+			name:     "single heart",
+			counts:   ReactionCounts{Heart: 7},
+			expected: "❤️ 7",
+		},
+		{
+			name:     "single rocket",
+			counts:   ReactionCounts{Rocket: 4},
+			expected: "🚀 4",
+		},
+		{
+			name:     "single eyes",
+			counts:   ReactionCounts{Eyes: 2},
+			expected: "👀 2",
+		},
+		{
+			name:     "multiple reaction types",
+			counts:   ReactionCounts{PlusOne: 5, Heart: 2, Rocket: 1},
+			expected: "👍 5 ❤️ 2 🚀 1",
+		},
+		{
+			name: "all reaction types",
+			counts: ReactionCounts{
+				PlusOne:  1,
+				MinusOne: 2,
+				Laugh:    3,
+				Hooray:   4,
+				Confused: 5,
+				Heart:    6,
+				Rocket:   7,
+				Eyes:     8,
+			},
+			expected: "👍 1 👎 2 😄 3 🎉 4 😕 5 ❤️ 6 🚀 7 👀 8",
+		},
+		{
+			name:     "zero counts are omitted",
+			counts:   ReactionCounts{PlusOne: 0, Heart: 3, Rocket: 0},
+			expected: "❤️ 3",
+		},
+		{
+			name:     "maintains GitHub display order",
+			counts:   ReactionCounts{Eyes: 1, PlusOne: 1, Heart: 1},
+			expected: "👍 1 ❤️ 1 👀 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := FormatReactions(tt.counts)
+			if result != tt.expected {
+				t.Errorf("FormatReactions() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}

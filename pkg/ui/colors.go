@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gh-tui-tools/gh-review-conductor/pkg/github"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/termenv"
 )
@@ -442,4 +443,68 @@ func FormatRelativeTime(t time.Time) string {
 		}
 		return fmt.Sprintf("%d years ago", years)
 	}
+}
+
+// ReactionCounts holds counts for each reaction type for display purposes
+type ReactionCounts struct {
+	PlusOne  int
+	MinusOne int
+	Laugh    int
+	Hooray   int
+	Confused int
+	Heart    int
+	Rocket   int
+	Eyes     int
+}
+
+// ReactionCountsFromGitHub converts a github.Reactions to a ReactionCounts.
+func ReactionCountsFromGitHub(r github.Reactions) ReactionCounts {
+	return ReactionCounts{
+		PlusOne:  r.PlusOne,
+		MinusOne: r.MinusOne,
+		Laugh:    r.Laugh,
+		Hooray:   r.Hooray,
+		Confused: r.Confused,
+		Heart:    r.Heart,
+		Rocket:   r.Rocket,
+		Eyes:     r.Eyes,
+	}
+}
+
+// FormatReactions formats reaction counts for display with actual emoji characters.
+// Returns an empty string if there are no reactions.
+func FormatReactions(r ReactionCounts) string {
+	var parts []string
+
+	// Order matches GitHub's display order
+	if r.PlusOne > 0 {
+		parts = append(parts, fmt.Sprintf("👍 %d", r.PlusOne))
+	}
+	if r.MinusOne > 0 {
+		parts = append(parts, fmt.Sprintf("👎 %d", r.MinusOne))
+	}
+	if r.Laugh > 0 {
+		parts = append(parts, fmt.Sprintf("😄 %d", r.Laugh))
+	}
+	if r.Hooray > 0 {
+		parts = append(parts, fmt.Sprintf("🎉 %d", r.Hooray))
+	}
+	if r.Confused > 0 {
+		parts = append(parts, fmt.Sprintf("😕 %d", r.Confused))
+	}
+	if r.Heart > 0 {
+		parts = append(parts, fmt.Sprintf("❤️ %d", r.Heart))
+	}
+	if r.Rocket > 0 {
+		parts = append(parts, fmt.Sprintf("🚀 %d", r.Rocket))
+	}
+	if r.Eyes > 0 {
+		parts = append(parts, fmt.Sprintf("👀 %d", r.Eyes))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return strings.Join(parts, " ")
 }

@@ -295,12 +295,26 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			return comment.ID, nil
 		}
 
-		// Reaction complete - apply the reaction via API
-		reactionComplete := func(commentID int64, apiName, displayEmoji string) (string, error) {
+		// Reaction complete - apply the reaction via API and update cached data
+		reactionComplete := func(item BrowseItem, commentID int64, apiName, displayEmoji string) (string, error) {
 			err := client.AddReactionToComment(prNumber, commentID, apiName)
 			if err != nil {
 				return "", err
 			}
+
+			// Fetch updated reactions and update the cached comment
+			updatedReactions, err := client.FetchCommentReactions(prNumber, commentID)
+			if err == nil && updatedReactions != nil {
+				// Update the correct comment based on SelectedCommentIdx
+				if item.SelectedCommentIdx == 0 {
+					// Update main comment
+					item.Comment.Reactions = *updatedReactions
+				} else if item.SelectedCommentIdx-1 < len(item.Comment.ThreadComments) {
+					// Update thread reply
+					item.Comment.ThreadComments[item.SelectedCommentIdx-1].Reactions = *updatedReactions
+				}
+			}
+
 			repo, err := client.GetRepo()
 			if err != nil {
 				// The reaction was added, but we can't create the URL.
@@ -615,6 +629,12 @@ func (r *browseItemRenderer) PreviewWithHighlight(item BrowseItem, highlightIdx 
 		preview.WriteString(ui.Colorize(ui.ColorCyan, fmt.Sprintf("Time: %s\n", ui.FormatRelativeTime(comment.CreatedAt))))
 	}
 
+	// Display reactions if any
+	reactions := ui.FormatReactions(ui.ReactionCountsFromGitHub(comment.Reactions))
+	if reactions != "" {
+		preview.WriteString(ui.Colorize(ui.ColorCyan, fmt.Sprintf("Reactions: %s\n", reactions)))
+	}
+
 	if comment.IsOutdated {
 		preview.WriteString(ui.Colorize(ui.ColorYellow, ui.EmojiText("⚠️  OUTDATED\n", "OUTDATED\n")))
 	}
@@ -694,6 +714,12 @@ func (r *browseItemRenderer) PreviewWithHighlight(item BrowseItem, highlightIdx 
 				replyHeader += fmt.Sprintf(" | %s", ui.FormatRelativeTime(threadComment.CreatedAt))
 			}
 			preview.WriteString(replyHeader + "\n")
+
+			// Display reactions for thread comment if any
+			replyReactions := ui.FormatReactions(ui.ReactionCountsFromGitHub(threadComment.Reactions))
+			if replyReactions != "" {
+				preview.WriteString(fmt.Sprintf("Reactions: %s\n", replyReactions))
+			}
 
 			// Truncate very long replies before rendering to avoid slowness
 			replyBody := threadComment.Body

@@ -114,9 +114,9 @@ type SelectorOptions[T any] struct {
 	EditKey    string // e.g., "e edit"
 
 	// Action: x (add reaction)
-	ReactionAction   func(T) (int64, error)                                          // Returns comment ID to react to
-	ReactionComplete func(commentID int64, apiName, displayEmoji string) (string, error) // Applies reaction, returns confirmation message
-	ReactionKey      string                                                          // e.g., "x react"
+	ReactionAction   func(T) (int64, error)                                       // Returns comment ID to react to
+	ReactionComplete func(item T, commentID int64, apiName, displayEmoji string) (string, error) // Applies reaction, returns confirmation message
+	ReactionKey      string                                                       // e.g., "x react"
 }
 
 // SelectionModel is the tea.Model for interactive selection
@@ -156,9 +156,10 @@ type SelectionModel[T any] struct {
 	commentSelectInDetail bool        // true if selection was triggered from detail view
 
 	// Reaction mode state (for cycling through emoji reactions)
-	reactionMode      bool  // true when cycling through reactions
-	reactionIdx       int   // current emoji index (0-7)
-	reactionCommentID int64 // comment ID to react to
+	reactionMode      bool        // true when cycling through reactions
+	reactionIdx       int         // current emoji index (0-7)
+	reactionCommentID int64       // comment ID to react to
+	reactionItem      listItem[T] // the item being reacted to
 }
 
 // listItem wraps a generic item for the list model

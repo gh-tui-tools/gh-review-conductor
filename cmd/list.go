@@ -168,6 +168,12 @@ func displayComment(index, total int, comment *github.ReviewComment) {
 		fmt.Printf("\n%s\n", ui.Colorize(ui.ColorGreen, ui.EmojiText("✅ Resolved", "Resolved")))
 	}
 
+	// Show reactions if any
+	reactions := ui.FormatReactions(ui.ReactionCountsFromGitHub(comment.Reactions))
+	if reactions != "" {
+		fmt.Printf("\n%s %s\n", ui.Colorize(ui.ColorYellow, "Reactions:"), reactions)
+	}
+
 	// Show the review comment (without the suggestion block)
 	commentText := ui.StripSuggestionBlock(comment.Body)
 	if commentText != "" {
@@ -199,6 +205,13 @@ func displayComment(index, total int, comment *github.ReviewComment) {
 		fmt.Printf("\n%s\n", ui.Colorize(ui.ColorCyan, "Thread replies:"))
 		for i, threadComment := range comment.ThreadComments {
 			fmt.Printf("\n  %s\n", ui.Colorize(ui.ColorGray, fmt.Sprintf("└─ Reply %d by @%s:", i+1, threadComment.Author)))
+
+			// Show reactions for reply if any
+			replyReactions := ui.FormatReactions(ui.ReactionCountsFromGitHub(threadComment.Reactions))
+			if replyReactions != "" {
+				fmt.Printf("     %s %s\n", ui.Colorize(ui.ColorYellow, "Reactions:"), replyReactions)
+			}
+
 			rendered, err := ui.RenderMarkdown(threadComment.Body)
 			if err == nil && rendered != "" {
 				// Indent the rendered markdown
