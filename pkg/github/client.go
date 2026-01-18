@@ -18,6 +18,19 @@ type Client struct {
 	debug bool
 }
 
+// Reactions represents the reaction counts on a comment
+type Reactions struct {
+	PlusOne    int `json:"+1"`
+	MinusOne   int `json:"-1"`
+	Laugh      int `json:"laugh"`
+	Hooray     int `json:"hooray"`
+	Confused   int `json:"confused"`
+	Heart      int `json:"heart"`
+	Rocket     int `json:"rocket"`
+	Eyes       int `json:"eyes"`
+	TotalCount int `json:"total_count"`
+}
+
 type ReviewComment struct {
 	ID                int64
 	ThreadID          string // GraphQL node ID for resolving the thread
@@ -39,6 +52,7 @@ type ReviewComment struct {
 	HTMLURL           string
 	CreatedAt         time.Time
 	IsOutdated        bool
+	Reactions         Reactions
 	ThreadComments    []ThreadComment
 }
 
@@ -48,6 +62,7 @@ type ThreadComment struct {
 	Author    string
 	HTMLURL   string
 	CreatedAt time.Time
+	Reactions Reactions
 }
 
 // PullRequest represents a GitHub pull request with display-relevant fields
@@ -127,6 +142,12 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 									author {
 										login
 									}
+									reactionGroups {
+										content
+										reactors {
+											totalCount
+										}
+									}
 								}
 							}
 						}
@@ -163,6 +184,12 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 									Author     struct {
 										Login string `json:"login"`
 									} `json:"author"`
+									ReactionGroups []struct {
+										Content  string `json:"content"`
+										Reactors struct {
+											TotalCount int `json:"totalCount"`
+										} `json:"reactors"`
+									} `json:"reactionGroups"`
 								} `json:"nodes"`
 							} `json:"comments"`
 						} `json:"nodes"`
@@ -199,12 +226,39 @@ func (c *Client) getReviewThreads(repo string, prNumber int) (map[int64]*ThreadI
 		for j, comment := range thread.Comments.Nodes {
 			c.debugLog("  Comment %d: ID=%d, author=%s, body_len=%d",
 				j, comment.DatabaseID, comment.Author.Login, len(comment.Body))
+
+			// Convert reactionGroups to Reactions struct
+			reactions := Reactions{}
+			for _, rg := range comment.ReactionGroups {
+				count := rg.Reactors.TotalCount
+				switch rg.Content {
+				case "THUMBS_UP":
+					reactions.PlusOne = count
+				case "THUMBS_DOWN":
+					reactions.MinusOne = count
+				case "LAUGH":
+					reactions.Laugh = count
+				case "HOORAY":
+					reactions.Hooray = count
+				case "CONFUSED":
+					reactions.Confused = count
+				case "HEART":
+					reactions.Heart = count
+				case "ROCKET":
+					reactions.Rocket = count
+				case "EYES":
+					reactions.Eyes = count
+				}
+				reactions.TotalCount += count
+			}
+
 			threadComments = append(threadComments, ThreadComment{
 				ID:        comment.DatabaseID,
 				Body:      comment.Body,
 				Author:    comment.Author.Login,
 				HTMLURL:   comment.URL,
 				CreatedAt: comment.CreatedAt,
+				Reactions: reactions,
 			})
 		}
 
@@ -452,6 +506,7 @@ func (c *Client) FetchReviewComments(prNumber int) ([]*ReviewComment, error) {
 		OriginalStartLine int       `json:"original_start_line"`
 		SubjectType       string    `json:"subject_type"`
 		CreatedAt         time.Time `json:"created_at"`
+		Reactions         Reactions `json:"reactions"`
 	}
 
 	if err := json.Unmarshal(stdOut.Bytes(), &rawComments); err != nil {
@@ -544,6 +599,7 @@ func (c *Client) FetchReviewComments(prNumber int) ([]*ReviewComment, error) {
 			HTMLURL:           raw.HTMLURL,
 			CreatedAt:         raw.CreatedAt,
 			IsOutdated:        isOutdated,
+			Reactions:         raw.Reactions,
 			ThreadComments:    threadComments,
 		}
 
@@ -824,4 +880,53 @@ func (c *Client) AddReactionToComment(prNumber int, commentID int64, emoji strin
 
 	c.debugLog("Reaction response: %s", stdOut.String())
 	return nil
+}
+
+// FetchCommentReactions fetches the current reaction counts for a specific comment.
+func (c *Client) FetchCommentReactions(prNumber int, commentID int64) (*Reactions, error) {
+	repo, err := c.getRepo()
+	if err != nil {
+		return nil, err
+	}
+
+	c.debugLog("Fetching reactions for comment %d on PR %d", commentID, prNumber)
+
+	endpoint := fmt.Sprintf("repos/%s/pulls/comments/%d/reactions", repo, commentID)
+	stdOut, stdErr, err := gh.Exec("api", endpoint,
+		"--header", "Accept: application/vnd.github.squirrel-girl-preview+json",
+		"--paginate")
+	if err != nil {
+		c.debugLog("Fetch reactions error: %v, stderr: %s", err, stdErr.String())
+		return nil, fmt.Errorf("failed to fetch reactions: %w", err)
+	}
+
+	// Parse the reactions array and count by type
+	var reactionsList []struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(stdOut.Bytes(), &reactionsList); err != nil {
+		return nil, fmt.Errorf("failed to parse reactions: %w", err)
+	}
+
+	reactions := &Reactions{}
+	reactionMap := map[string]*int{
+		"+1":       &reactions.PlusOne,
+		"-1":       &reactions.MinusOne,
+		"laugh":    &reactions.Laugh,
+		"hooray":   &reactions.Hooray,
+		"confused": &reactions.Confused,
+		"heart":    &reactions.Heart,
+		"rocket":   &reactions.Rocket,
+		"eyes":     &reactions.Eyes,
+	}
+
+	for _, r := range reactionsList {
+		if counter, ok := reactionMap[r.Content]; ok {
+			(*counter)++
+		}
+		reactions.TotalCount++
+	}
+
+	c.debugLog("Fetched reactions: %+v", reactions)
+	return reactions, nil
 }

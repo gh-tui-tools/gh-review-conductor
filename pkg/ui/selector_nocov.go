@@ -181,9 +181,13 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				emoji := reactionEmojis[m.reactionIdx]
 				m.reactionMode = false
 				if m.opts.ReactionComplete != nil {
-					msg, err := m.opts.ReactionComplete(m.reactionCommentID, emoji.name, emoji.display)
+					msg, err := m.opts.ReactionComplete(m.reactionItem.value, m.reactionCommentID, emoji.name, emoji.display)
 					if err != nil {
 						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
+					}
+					// Refresh the viewport to show updated reactions
+					if m.showDetail {
+						m.viewport.SetContent(m.opts.Renderer.PreviewWithHighlight(m.reactionItem.value, -1))
 					}
 					// Show confirmation dialog with the result
 					m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", msg)
@@ -1201,15 +1205,16 @@ func (m *SelectionModel[T]) handleReactionKey(inDetailView bool) (tea.Model, tea
 	if err != nil {
 		return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 	}
-	m.enterReactionMode(commentID)
+	m.enterReactionMode(commentID, item)
 	return m, m.showReactionStatus()
 }
 
 // enterReactionMode starts reaction selection for the given comment
-func (m *SelectionModel[T]) enterReactionMode(commentID int64) {
+func (m *SelectionModel[T]) enterReactionMode(commentID int64, item listItem[T]) {
 	m.reactionMode = true
 	m.reactionIdx = 0
 	m.reactionCommentID = commentID
+	m.reactionItem = item
 }
 
 // showReactionStatus returns a command to display the current reaction selection status
@@ -1289,7 +1294,9 @@ func (m *SelectionModel[T]) executeCommentAction() (tea.Model, tea.Cmd) {
 			if err != nil {
 				return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 			}
-			m.enterReactionMode(commentID)
+			// Create a listItem with the updated selection
+			itemWithIdx := listItem[T]{value: itemWithSelection, item: m.opts.Renderer}
+			m.enterReactionMode(commentID, itemWithIdx)
 			return m, m.showReactionStatus()
 		}
 	}

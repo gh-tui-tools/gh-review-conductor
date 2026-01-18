@@ -412,10 +412,12 @@ func TestReactionActionType(t *testing.T) {
 // TestReactionCompleteType verifies the ReactionComplete callback type works correctly
 func TestReactionCompleteType(t *testing.T) {
 	// Track what was called
+	var calledItem string
 	var calledID int64
 	var calledDisplayEmoji string
 
-	complete := func(commentID int64, apiName, displayEmoji string) (string, error) {
+	complete := func(item string, commentID int64, apiName, displayEmoji string) (string, error) {
+		calledItem = item
 		calledID = commentID
 		calledDisplayEmoji = displayEmoji
 		if apiName == "invalid" {
@@ -427,12 +429,15 @@ func TestReactionCompleteType(t *testing.T) {
 	}
 
 	// Test successful completion
-	msg, err := complete(12345, "+1", "👍")
+	msg, err := complete("test-item", 12345, "+1", "👍")
 	if err != nil {
 		t.Errorf("ReactionComplete returned unexpected error: %v", err)
 	}
 	if msg == "" {
 		t.Error("ReactionComplete should return a confirmation message")
+	}
+	if calledItem != "test-item" {
+		t.Errorf("ReactionComplete was called with item = %q, want %q", calledItem, "test-item")
 	}
 	if calledID != 12345 {
 		t.Errorf("ReactionComplete was called with commentID = %d, want %d", calledID, 12345)
@@ -442,7 +447,7 @@ func TestReactionCompleteType(t *testing.T) {
 	}
 
 	// Test error case
-	_, err = complete(99999, "invalid", "❌")
+	_, err = complete("test-item", 99999, "invalid", "❌")
 	if err == nil {
 		t.Error("ReactionComplete should return error for invalid emoji")
 	}
@@ -456,7 +461,7 @@ func TestSelectorOptionsReactionFields(t *testing.T) {
 		ReactionAction: func(item string) (int64, error) {
 			return 123, nil
 		},
-		ReactionComplete: func(commentID int64, apiName, displayEmoji string) (string, error) {
+		ReactionComplete: func(item string, commentID int64, apiName, displayEmoji string) (string, error) {
 			return fmt.Sprintf("%s added", displayEmoji), nil
 		},
 		ReactionKey: "x react",
@@ -479,7 +484,7 @@ func TestSelectorOptionsReactionFields(t *testing.T) {
 		t.Errorf("ReactionAction callback failed: id=%d, err=%v", id, err)
 	}
 
-	msg, err := opts.ReactionComplete(123, "+1", "👍")
+	msg, err := opts.ReactionComplete("item1", 123, "+1", "👍")
 	if err != nil {
 		t.Errorf("ReactionComplete callback failed: %v", err)
 	}
@@ -676,11 +681,11 @@ func TestReactionCompleteErrorFormatting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			complete := func(commentID int64, emoji string) (string, error) {
-				return "", fmt.Errorf("failed to add %s reaction: %s", emoji, tt.apiError)
+			complete := func(item string, commentID int64, apiName, displayEmoji string) (string, error) {
+				return "", fmt.Errorf("failed to add %s reaction: %s", apiName, tt.apiError)
 			}
 
-			_, err := complete(12345, tt.emoji)
+			_, err := complete("test-item", 12345, tt.emoji, "👍")
 			if err == nil {
 				t.Error("Expected error, got nil")
 			}

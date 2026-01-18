@@ -31,7 +31,7 @@ This document describes the architecture, commands, and features of `gh-review-c
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                           gh-review-conductor                                 │
+│                         gh-review-conductor                           │
 ├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
@@ -107,17 +107,17 @@ The tool uses both GraphQL and REST APIs:
 - **REST**: Detailed comment data including diff hunks, positions, and line numbers
 
 ```
-┌─────────────────┐         ┌─────────────────┐
-│   gh-review-conductor   │         │   GitHub API    │
-│                 │         │                 │
-│  ┌───────────┐  │  REST   │  ┌───────────┐  │
-│  │  Client   │──┼────────▶│  │ /pulls/   │  │
-│  │           │  │         │  │ comments  │  │
-│  │           │  │ GraphQL │  │           │  │
-│  │           │──┼────────▶│  │ threads   │  │
-│  │           │  │         │  │ mutations │  │
-│  └───────────┘  │         │  └───────────┘  │
-└─────────────────┘         └─────────────────┘
+┌───────────────────────┐         ┌─────────────────┐
+│  gh-review-conductor  │         │   GitHub API    │
+│                       │         │                 │
+│  ┌───────────┐        │  REST   │  ┌───────────┐  │
+│  │  Client   │────────┼────────▶│  │ /pulls/   │  │
+│  │           │        │         │  │ comments  │  │
+│  │           │        │ GraphQL │  │           │  │
+│  │           │────────┼────────▶│  │ threads   │  │
+│  │           │        │         │  │ mutations │  │
+│  └───────────┘        │         │  └───────────┘  │
+└───────────────────────┘         └─────────────────┘
 ```
 
 ---
@@ -161,29 +161,30 @@ The browse command provides two interactive views:
                               ▼
 
 ┌───────────────────────────────────────────────────────────────────────┐
-│                           DETAIL VIEW                                 │
-├───────────────────────────────────────────────────────────────────────┤
-│  Author: @reviewer                                                    │
-│  Location: src/components/Button.tsx:42                               │
-│  Status: unresolved                                                   │
-│  URL: https://github.com/owner/repo/pull/123#discussion_r789          │
-│  Time: 2 hours ago                                                    │
-│                                                                       │
-│  --- Comment ---                                                      │
-│  Consider using React.memo here to prevent unnecessary re-renders.    │
-│                                                                       │
-│  --- Context ---                                                      │
-│  @@ -40,5 +40,7 @@                                                    │
-│   export function Button({ onClick, children }) {                     │
-│  +  const handleClick = useCallback(() => {                           │
-│  +    onClick?.();                                                    │
-│                                                                       │
-│  --- Replies (2) ---                                                  │
-│  Reply 1 by @author | 1 hour ago                                      │
-│  Good suggestion, I'll look into it.                                  │
-│                                                                       │
-├───────────────────────────────────────────────────────────────────────┤
-│  esc back • o open • r resolve • R resolve+comment • Q quote • a     │
+│                              DETAIL VIEW                              │
+└───────────────────────────────────────────────────────────────────────┘
+  Author: @reviewer
+  Location: src/components/Button.tsx:42
+  Status: unresolved
+  URL: https://github.com/owner/repo/pull/123#discussion_r789
+  Time: 2 hours ago
+
+  --- Comment ---
+  Consider using React.memo here to prevent unnecessary re-renders.
+  Reactions: 👍 3 ❤️ 1
+
+  --- Context ---
+  @@ -40,5 +40,7 @@
+   export function Button({ onClick, children }) {
+  +  const handleClick = useCallback(() => {
+  +    onClick?.();
+
+  --- Replies (2) ---
+  Reply 1 by @author | 1 hour ago
+  Good suggestion, I'll look into it.
+  Reactions: 👍 1
+┌───────────────────────────────────────────────────────────────────────┐
+│  esc:back  o:open  r:resolve  R:resolve+comment  Q:quote  a:agent     │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -202,6 +203,7 @@ The browse command provides two interactive views:
 | `a` | Launch agent | Launch agent | Hand off to coding agent |
 | `e` | Edit file | Edit file | Open file at line |
 | `x` | React | React | Add emoji reaction |
+| `h`/`tab` | Toggle filter | - | Show/hide resolved |
 | `i` | Refresh | - | Fetch fresh data |
 | `Ctrl+F` | - | Page down | Scroll viewport |
 | `Ctrl+B` | - | Page up | Scroll viewport |
@@ -212,7 +214,7 @@ When a thread has multiple comments, pressing `Q`, `C`, `a`, or `x` enters selec
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                    THREAD COMMENT SELECTION                           │
+│                       THREAD COMMENT SELECTION                        │
 ├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │  ▶▶▶ SELECTED COMMENT ◀◀◀                                             │
@@ -357,6 +359,19 @@ POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions
 {"content": "+1"}
 ```
 
+#### Reaction Display
+
+All comments display their existing reactions with counts, matching GitHub's web UI:
+
+```
+Reactions: 👍 5 👎 1 😄 2 🎉 1 😕 1 ❤️ 3 🚀 2 👀 1
+```
+
+- Reactions are shown for both top-level comments and thread replies
+- Only reactions with count > 0 are displayed
+- Order matches GitHub's display order
+- Reactions are fetched from REST API (top-level) and GraphQL (replies)
+
 ---
 
 ### apply Command
@@ -458,6 +473,8 @@ gh review-conductor list [PR_NUMBER] [THREAD_ID]
 [1/3] src/Button.tsx:42 by @reviewer (ID 123456789)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+Reactions: 👍 3 ❤️ 1
+
 Review comment:
   Consider using React.memo here to prevent unnecessary re-renders.
 
@@ -466,6 +483,7 @@ Suggested change:
 
 Thread replies:
   └─ Reply 1 by @author:
+     Reactions: 👍 1
      Good point, I'll update this.
 ```
 
@@ -672,8 +690,22 @@ pkg/
 │  IsOutdated    bool         # True if code has changed                │
 │  HasSuggestion bool         # Contains suggestion block               │
 │  SuggestedCode string       # Extracted suggestion                    │
+│  Reactions     Reactions    # Emoji reaction counts                   │
 │  ThreadComments []ThreadComment  # Replies in thread                  │
 └───────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────┐
+│             Reactions               │
+├─────────────────────────────────────┤
+│  PlusOne    int   # 👍 count        │
+│  MinusOne   int   # 👎 count        │
+│  Laugh      int   # 😄 count        │
+│  Hooray     int   # 🎉 count        │
+│  Confused   int   # 😕 count        │
+│  Heart      int   # ❤️ count        │
+│  Rocket     int   # 🚀 count        │
+│  Eyes       int   # 👀 count        │
+└─────────────────────────────────────┘
 ```
 
 ### API Call Flow
