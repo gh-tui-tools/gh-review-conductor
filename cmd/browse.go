@@ -296,8 +296,8 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 		}
 
 		// Reaction complete - apply the reaction via API
-		reactionComplete := func(commentID int64, emoji string) (string, error) {
-			err := client.AddReactionToComment(prNumber, commentID, emoji)
+		reactionComplete := func(commentID int64, apiName, displayEmoji string) (string, error) {
+			err := client.AddReactionToComment(prNumber, commentID, apiName)
 			if err != nil {
 				return "", err
 			}
@@ -305,11 +305,11 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				// The reaction was added, but we can't create the URL.
 				// Return a success message without the URL.
-				return fmt.Sprintf("%s reaction added", emoji), nil
+				return fmt.Sprintf("%s reaction added.", displayEmoji), nil
 			}
 			url := fmt.Sprintf("https://github.com/%s/pull/%d#discussion_r%d", repo, prNumber, commentID)
 			link := ui.CreateHyperlink(url, "reaction added")
-			return fmt.Sprintf("%s %s.", emoji, link), nil
+			return fmt.Sprintf("%s %s.", displayEmoji, link), nil
 		}
 
 		selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{

@@ -17,17 +17,17 @@ import (
 
 // reactionEmojis defines the available emoji reactions for GitHub comments
 var reactionEmojis = []struct {
-	name    string
-	display string
+	name    string // GitHub API name
+	display string // Actual emoji for display
 }{
-	{"+1", "+1"},
-	{"-1", "-1"},
-	{"laugh", "laugh"},
-	{"confused", "confused"},
-	{"heart", "heart"},
-	{"hooray", "hooray"},
-	{"rocket", "rocket"},
-	{"eyes", "eyes"},
+	{"+1", "👍"},
+	{"-1", "👎"},
+	{"laugh", "😄"},
+	{"confused", "😕"},
+	{"heart", "❤️"},
+	{"hooray", "🎉"},
+	{"rocket", "🚀"},
+	{"eyes", "👀"},
 }
 
 // SelectFromList creates an interactive selector for a list of items.
@@ -178,10 +178,10 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				// Add the reaction
-				emoji := reactionEmojis[m.reactionIdx].name
+				emoji := reactionEmojis[m.reactionIdx]
 				m.reactionMode = false
 				if m.opts.ReactionComplete != nil {
-					msg, err := m.opts.ReactionComplete(m.reactionCommentID, emoji)
+					msg, err := m.opts.ReactionComplete(m.reactionCommentID, emoji.name, emoji.display)
 					if err != nil {
 						return m, m.list.NewStatusMessage(Colorize(ColorRed, err.Error()))
 					}

@@ -114,9 +114,9 @@ type SelectorOptions[T any] struct {
 	EditKey    string // e.g., "e edit"
 
 	// Action: x (add reaction)
-	ReactionAction   func(T) (int64, error)                       // Returns comment ID to react to
-	ReactionComplete func(commentID int64, emoji string) (string, error) // Applies reaction, returns confirmation message
-	ReactionKey      string                                       // e.g., "x react"
+	ReactionAction   func(T) (int64, error)                                          // Returns comment ID to react to
+	ReactionComplete func(commentID int64, apiName, displayEmoji string) (string, error) // Applies reaction, returns confirmation message
+	ReactionKey      string                                                          // e.g., "x react"
 }
 
 // SelectionModel is the tea.Model for interactive selection
