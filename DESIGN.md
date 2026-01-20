@@ -204,7 +204,7 @@ The browse command provides two interactive views:
 | `e` | Edit file | Edit file | Open file at line |
 | `x` | React | React | Add emoji reaction |
 | `h`/`tab` | Toggle filter | - | Show/hide resolved |
-| `i` | Refresh | - | Fetch fresh data |
+| `i` | Refresh | Refresh | Fetch fresh data |
 | `Ctrl+F` | - | Page down | Scroll viewport |
 | `Ctrl+B` | - | Page up | Scroll viewport |
 

@@ -147,6 +147,20 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				listItems[i] = listItem[T]{value: item, item: m.opts.Renderer}
 			}
 			cmd := m.list.SetItems(listItems)
+
+			// If in detail view, refresh the viewport content
+			if m.showDetail {
+				selected := m.list.SelectedItem()
+				if selected != nil {
+					item := selected.(listItem[T])
+					highlightIdx := -1
+					if m.commentSelectMode {
+						highlightIdx = m.commentSelectIdx
+					}
+					m.viewport.SetContent(m.opts.Renderer.PreviewWithHighlight(item.value, highlightIdx))
+				}
+			}
+
 			return m, tea.Batch(cmd, m.list.NewStatusMessage(Colorize(ColorGreen, fmt.Sprintf("Refreshed: %d items", len(items)))))
 		}
 		return m, nil
@@ -335,6 +349,9 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "x":
 				// Add reaction from detail view
 				return m.handleReactionKey(true)
+			case "i":
+				// Refresh from detail view
+				return m.startRefresh()
 			case "o":
 				// Open in browser from detail view
 				if m.opts.OnOpen != nil {
@@ -416,14 +433,7 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "i":
 			// Refresh
-			if m.opts.RefreshItems != nil && !m.refreshing {
-				m.refreshing = true
-				return m, func() tea.Msg {
-					items, err := m.opts.RefreshItems()
-					return refreshFinishedMsg{items: items, err: err}
-				}
-			}
-			return m, nil
+			return m.startRefresh()
 		case "r", "u":
 			// Execute first custom action (r=resolve, u=unresolve - both trigger same action)
 			if m.opts.ResolveAction != nil {
@@ -647,6 +657,18 @@ func (m *SelectionModel[T]) updateVisibleItems() {
 	m.list.SetItems(listItems)
 }
 
+// startRefresh initiates an async refresh if RefreshItems is configured and not already refreshing
+func (m *SelectionModel[T]) startRefresh() (tea.Model, tea.Cmd) {
+	if m.opts.RefreshItems != nil && !m.refreshing {
+		m.refreshing = true
+		return m, func() tea.Msg {
+			items, err := m.opts.RefreshItems()
+			return refreshFinishedMsg{items: items, err: err}
+		}
+	}
+	return m, nil
+}
+
 // isSelectedResolved returns whether the currently selected item is resolved
 func (m *SelectionModel[T]) isSelectedResolved() bool {
 	if m.opts.IsItemResolved == nil {
@@ -724,6 +746,9 @@ func (m SelectionModel[T]) View() string {
 		if m.opts.OnOpen != nil {
 			actions = append(actions, "o:open")
 		}
+		if m.opts.RefreshItems != nil {
+			actions = append(actions, "i:refresh")
+		}
 		actions = append(actions, "ctrl+f/b:scroll")
 
 		// Show comment selection or reaction mode status if active
@@ -739,7 +764,12 @@ func (m SelectionModel[T]) View() string {
 			header = titleStyle.Render("Detail View") + "  " + helpStyle.Render(strings.Join(actions, " | "))
 		}
 
-		footer := helpStyle.Render(strings.Join(actions, " | "))
+		var footer string
+		if m.refreshing {
+			footer = helpStyle.Render("Refreshing...")
+		} else {
+			footer = helpStyle.Render(strings.Join(actions, " | "))
+		}
 
 		// Calculate available height for viewport
 		headerHeight := lipgloss.Height(header) + 1
@@ -940,6 +970,7 @@ Actions:`
 	helpText += `
 
 Detail View:
+  i            Refresh content
   ctrl+f       Page down
   ctrl+b       Page up
 

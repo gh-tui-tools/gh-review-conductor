@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestSanitizeEditorContent(t *testing.T) {
@@ -1071,4 +1074,323 @@ func TestHKeyIsFilterToggle(t *testing.T) {
 			t.Errorf("Compatibility filter toggle key should be 'tab', got %q", compatKey)
 		}
 	})
+}
+
+// mockRenderer implements ItemRenderer for testing
+type mockRenderer struct {
+	previewContent string
+}
+
+func (r mockRenderer) Title(item string) string                           { return item }
+func (r mockRenderer) Description(item string) string                     { return "desc" }
+func (r mockRenderer) Preview(item string) string                         { return r.previewContent }
+func (r mockRenderer) PreviewWithHighlight(item string, idx int) string   { return r.previewContent + "-" + item }
+func (r mockRenderer) EditPath(item string) string                        { return "" }
+func (r mockRenderer) EditLine(item string) int                           { return 0 }
+func (r mockRenderer) FilterValue(item string) string                     { return item }
+func (r mockRenderer) IsSkippable(item string) bool                       { return false }
+func (r mockRenderer) ThreadCommentCount(item string) int                 { return 1 }
+func (r mockRenderer) ThreadCommentPreview(item string, idx int) string   { return item }
+func (r mockRenderer) WithSelectedComment(item string, idx int) string    { return item }
+
+// newTestModel creates a SelectionModel suitable for testing
+func newTestModel(items []string, opts SelectorOptions[string]) SelectionModel[string] {
+	listItems := make([]list.Item, len(items))
+	for i, item := range items {
+		listItems[i] = listItem[string]{value: item, item: opts.Renderer}
+	}
+
+	delegate := itemDelegate[string]{renderer: opts.Renderer}
+	l := list.New(listItems, delegate, 80, 24)
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+
+	return SelectionModel[string]{
+		list:         l,
+		items:        items,
+		opts:         opts,
+		result:       nil,
+		filterActive: opts.FilterDefault,
+	}
+}
+
+func TestRefreshKeyTriggersRefresh(t *testing.T) {
+	t.Run("pressing_i_sets_refreshing_true_and_returns_command", func(t *testing.T) {
+		refreshCalled := false
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				refreshCalled = true
+				return []string{"refreshed1", "refreshed2"}, nil
+			},
+		})
+
+		// Send 'i' key - startRefresh has pointer receiver so returns *SelectionModel
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}
+		updated, cmd := m.Update(keyMsg)
+		result := updated.(*SelectionModel[string])
+
+		if !result.refreshing {
+			t.Error("Expected refreshing to be true after pressing 'i'")
+		}
+		if cmd == nil {
+			t.Error("Expected a command to be returned for async refresh")
+		}
+
+		// Execute the command to trigger the callback
+		if cmd != nil {
+			cmd()
+			if !refreshCalled {
+				t.Error("Expected RefreshItems callback to be called")
+			}
+		}
+	})
+
+	t.Run("pressing_i_without_RefreshItems_configured_does_nothing", func(t *testing.T) {
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:        items,
+			Renderer:     renderer,
+			RefreshItems: nil, // Not configured
+		})
+
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}
+		updated, cmd := m.Update(keyMsg)
+		result := updated.(*SelectionModel[string])
+
+		if result.refreshing {
+			t.Error("Expected refreshing to remain false when RefreshItems not configured")
+		}
+		if cmd != nil {
+			t.Error("Expected no command when RefreshItems not configured")
+		}
+	})
+
+	t.Run("pressing_i_while_already_refreshing_does_nothing", func(t *testing.T) {
+		callCount := 0
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				callCount++
+				return items, nil
+			},
+		})
+
+		// Set refreshing to true (simulating an in-progress refresh)
+		m.refreshing = true
+
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}
+		updated, cmd := m.Update(keyMsg)
+		result := updated.(*SelectionModel[string])
+
+		if !result.refreshing {
+			t.Error("Expected refreshing to remain true")
+		}
+		if cmd != nil {
+			t.Error("Expected no new command when already refreshing")
+		}
+
+		// Execute if a command was returned (it shouldn't be)
+		if cmd != nil {
+			cmd()
+		}
+		if callCount > 0 {
+			t.Errorf("Expected RefreshItems not to be called while already refreshing, got %d calls", callCount)
+		}
+	})
+}
+
+func TestRefreshKeyInDetailView(t *testing.T) {
+	t.Run("pressing_i_in_detail_view_triggers_refresh", func(t *testing.T) {
+		refreshCalled := false
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				refreshCalled = true
+				return items, nil
+			},
+		})
+
+		// Simulate being in detail view
+		m.showDetail = true
+
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}
+		updated, cmd := m.Update(keyMsg)
+		result := updated.(*SelectionModel[string])
+
+		if !result.refreshing {
+			t.Error("Expected refreshing to be true after pressing 'i' in detail view")
+		}
+		if cmd == nil {
+			t.Error("Expected a command to be returned")
+		}
+
+		if cmd != nil {
+			cmd()
+			if !refreshCalled {
+				t.Error("Expected RefreshItems callback to be called from detail view")
+			}
+		}
+	})
+}
+
+func TestRefreshFinishedMsgUpdatesModel(t *testing.T) {
+	t.Run("refresh_finished_updates_items_and_clears_refreshing", func(t *testing.T) {
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				return []string{"new1", "new2", "new3"}, nil
+			},
+		})
+
+		// Simulate refresh in progress
+		m.refreshing = true
+
+		// Send refreshFinishedMsg - returns value type (not pointer)
+		newItems := []string{"new1", "new2", "new3"}
+		msg := refreshFinishedMsg{items: newItems, err: nil}
+		updated, _ := m.Update(msg)
+		result := updated.(SelectionModel[string])
+
+		if result.refreshing {
+			t.Error("Expected refreshing to be false after refresh finished")
+		}
+		if len(result.items) != 3 {
+			t.Errorf("Expected 3 items after refresh, got %d", len(result.items))
+		}
+		if result.items[0] != "new1" {
+			t.Errorf("Expected first item to be 'new1', got %q", result.items[0])
+		}
+	})
+
+	t.Run("refresh_finished_with_error_shows_error_status", func(t *testing.T) {
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				return nil, errors.New("network error")
+			},
+		})
+
+		m.refreshing = true
+
+		msg := refreshFinishedMsg{items: nil, err: errors.New("network error")}
+		updated, cmd := m.Update(msg)
+		result := updated.(SelectionModel[string])
+
+		if result.refreshing {
+			t.Error("Expected refreshing to be false after error")
+		}
+		// Items should remain unchanged
+		if len(result.items) != 2 {
+			t.Errorf("Expected items to remain unchanged on error, got %d", len(result.items))
+		}
+		// Should return a status message command
+		if cmd == nil {
+			t.Error("Expected a status message command on error")
+		}
+	})
+
+	t.Run("refresh_finished_in_detail_view_updates_viewport", func(t *testing.T) {
+		items := []string{"item1", "item2"}
+		renderer := mockRenderer{previewContent: "updated-preview"}
+
+		m := newTestModel(items, SelectorOptions[string]{
+			Items:    items,
+			Renderer: renderer,
+			RefreshItems: func() ([]string, error) {
+				return []string{"refreshed1", "refreshed2"}, nil
+			},
+		})
+
+		// Initialize viewport with window size message first (returns value type)
+		windowMsg := tea.WindowSizeMsg{Width: 80, Height: 24}
+		updated, _ := m.Update(windowMsg)
+		m = updated.(SelectionModel[string])
+
+		// Now set up detail view state
+		m.showDetail = true
+		m.refreshing = true
+
+		// Send refreshFinishedMsg (returns value type)
+		newItems := []string{"refreshed1", "refreshed2"}
+		msg := refreshFinishedMsg{items: newItems, err: nil}
+		updated, _ = m.Update(msg)
+		result := updated.(SelectionModel[string])
+
+		if result.refreshing {
+			t.Error("Expected refreshing to be false after refresh")
+		}
+
+		// Verify items were updated
+		if len(result.items) != 2 {
+			t.Errorf("Expected 2 items after refresh, got %d", len(result.items))
+		}
+		if result.items[0] != "refreshed1" {
+			t.Errorf("Expected first item to be 'refreshed1', got %q", result.items[0])
+		}
+	})
+}
+
+func TestRefreshingStateBlocksMultipleRefreshes(t *testing.T) {
+	callCount := 0
+	items := []string{"item1", "item2"}
+	renderer := mockRenderer{previewContent: "preview"}
+
+	m := newTestModel(items, SelectorOptions[string]{
+		Items:    items,
+		Renderer: renderer,
+		RefreshItems: func() ([]string, error) {
+			callCount++
+			return items, nil
+		},
+	})
+
+	// First 'i' press should trigger refresh - returns pointer type
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}
+	updated, cmd1 := m.Update(keyMsg)
+	mPtr := updated.(*SelectionModel[string])
+
+	if !mPtr.refreshing {
+		t.Error("Expected refreshing to be true after first 'i'")
+	}
+
+	// Second 'i' press while refreshing should be ignored - returns pointer type
+	_, cmd2 := mPtr.Update(keyMsg)
+
+	if cmd2 != nil {
+		t.Error("Expected no command on second 'i' while refreshing")
+	}
+
+	// Execute the first command
+	if cmd1 != nil {
+		cmd1()
+	}
+
+	// Only one call should have been made
+	if callCount != 1 {
+		t.Errorf("Expected exactly 1 RefreshItems call, got %d", callCount)
+	}
 }
