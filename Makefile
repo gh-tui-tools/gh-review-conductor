@@ -24,8 +24,8 @@ uninstall: ## Uninstall the extension from gh
 test: ## Run tests with race detection
 	$(GO) test -race -v ./...
 
-test-coverage: ## Run tests with coverage (excludes interactive TUI code)
-	$(GO) test -v -tags=coverage -coverprofile=coverage.out ./...
+test-coverage: ## Run tests with coverage and generate HTML report
+	$(GO) test -v -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
 fumpt: ## Run gofumpt to format code
