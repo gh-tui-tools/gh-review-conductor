@@ -729,7 +729,7 @@ func (r *browseItemRenderer) PreviewWithHighlight(item BrowseItem, highlightIdx 
 			// Display reactions for thread comment if any
 			replyReactions := ui.FormatReactions(ui.ReactionCountsFromGitHub(threadComment.Reactions))
 			if replyReactions != "" {
-				preview.WriteString(fmt.Sprintf("Reactions: %s\n", replyReactions))
+				fmt.Fprintf(&preview, "Reactions: %s\n", replyReactions)
 			}
 
 			// Truncate very long replies before rendering to avoid slowness

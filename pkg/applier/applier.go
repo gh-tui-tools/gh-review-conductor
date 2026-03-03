@@ -401,21 +401,19 @@ func (a *Applier) findReplacementTarget(comment *github.ReviewComment, fileLines
 
 // saveMismatchDiff creates a diagnostic diff file showing what was expected vs what was found
 func (a *Applier) saveMismatchDiff(comment *github.ReviewComment, fileLines []string, targetLine int, expectedLines []string, mismatchLine int) string {
-	diffFile := fmt.Sprintf("/tmp/gh-review-conductor-mismatch-%d.diff", comment.ID)
-
 	var diff strings.Builder
 
 	// Header
-	diff.WriteString(fmt.Sprintf("# Diagnostic diff for comment ID %d\n", comment.ID))
-	diff.WriteString(fmt.Sprintf("# File: %s\n", comment.Path))
-	diff.WriteString(fmt.Sprintf("# Comment URL: %s\n", comment.HTMLURL))
-	diff.WriteString(fmt.Sprintf("# Mismatch at line: %d\n", mismatchLine))
-	diff.WriteString(fmt.Sprintf("# Comment info: Line=%d, OriginalLine=%d, DiffSide=%s, IsOutdated=%v\n",
-		comment.Line, comment.OriginalLine, comment.DiffSide, comment.IsOutdated))
+	fmt.Fprintf(&diff, "# Diagnostic diff for comment ID %d\n", comment.ID)
+	fmt.Fprintf(&diff, "# File: %s\n", comment.Path)
+	fmt.Fprintf(&diff, "# Comment URL: %s\n", comment.HTMLURL)
+	fmt.Fprintf(&diff, "# Mismatch at line: %d\n", mismatchLine)
+	fmt.Fprintf(&diff, "# Comment info: Line=%d, OriginalLine=%d, DiffSide=%s, IsOutdated=%v\n",
+		comment.Line, comment.OriginalLine, comment.DiffSide, comment.IsOutdated)
 	diff.WriteString("#\n")
 	diff.WriteString("# Original diff hunk from GitHub:\n")
 	for _, line := range strings.Split(comment.DiffHunk, "\n") {
-		diff.WriteString(fmt.Sprintf("# %s\n", line))
+		fmt.Fprintf(&diff, "# %s\n", line)
 	}
 	diff.WriteString("#\n")
 	diff.WriteString("# EXPECTED (from GitHub review):\n")
@@ -424,7 +422,7 @@ func (a *Applier) saveMismatchDiff(comment *github.ReviewComment, fileLines []st
 		if targetLine+i+1 == mismatchLine {
 			marker = "!"
 		}
-		diff.WriteString(fmt.Sprintf("# %s [%d] %s\n", marker, targetLine+i+1, line))
+		fmt.Fprintf(&diff, "# %s [%d] %s\n", marker, targetLine+i+1, line)
 	}
 	diff.WriteString("#\n")
 	diff.WriteString("# ACTUAL (current file content):\n")
@@ -433,7 +431,7 @@ func (a *Applier) saveMismatchDiff(comment *github.ReviewComment, fileLines []st
 		if targetLine+i+1 == mismatchLine {
 			marker = "!"
 		}
-		diff.WriteString(fmt.Sprintf("# %s [%d] %s\n", marker, targetLine+i+1, fileLines[targetLine+i]))
+		fmt.Fprintf(&diff, "# %s [%d] %s\n", marker, targetLine+i+1, fileLines[targetLine+i])
 	}
 	diff.WriteString("#\n")
 	diff.WriteString("# Unified diff (proper format):\n")
@@ -448,46 +446,55 @@ func (a *Applier) saveMismatchDiff(comment *github.ReviewComment, fileLines []st
 		contextEnd = len(fileLines)
 	}
 
-	diff.WriteString(fmt.Sprintf("--- a/%s (expected based on review)\n", comment.Path))
-	diff.WriteString(fmt.Sprintf("+++ b/%s (actual current content)\n", comment.Path))
-	diff.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n",
+	fmt.Fprintf(&diff, "--- a/%s (expected based on review)\n", comment.Path)
+	fmt.Fprintf(&diff, "+++ b/%s (actual current content)\n", comment.Path)
+	fmt.Fprintf(&diff, "@@ -%d,%d +%d,%d @@\n",
 		targetLine+1, len(expectedLines),
-		targetLine+1, len(expectedLines)))
+		targetLine+1, len(expectedLines))
 
 	// Show context before
 	for i := contextStart; i < targetLine && i < len(fileLines); i++ {
-		diff.WriteString(fmt.Sprintf(" %s\n", fileLines[i]))
+		fmt.Fprintf(&diff, " %s\n", fileLines[i])
 	}
 
 	// Show the expected lines (what review expected - as removed)
 	for i := 0; i < len(expectedLines); i++ {
-		diff.WriteString(fmt.Sprintf("-%s\n", expectedLines[i]))
+		fmt.Fprintf(&diff, "-%s\n", expectedLines[i])
 	}
 
 	// Show the actual lines (what we found - as added)
 	for i := targetLine; i < targetLine+len(expectedLines) && i < len(fileLines); i++ {
-		diff.WriteString(fmt.Sprintf("+%s\n", fileLines[i]))
+		fmt.Fprintf(&diff, "+%s\n", fileLines[i])
 	}
 
 	// Show context after
 	for i := targetLine + len(expectedLines); i < contextEnd && i < len(fileLines); i++ {
-		diff.WriteString(fmt.Sprintf(" %s\n", fileLines[i]))
+		fmt.Fprintf(&diff, " %s\n", fileLines[i])
 	}
 
 	diff.WriteString("\n#\n")
 	diff.WriteString("# Suggested change from review:\n")
 	diff.WriteString("#\n")
 	for _, line := range strings.Split(comment.SuggestedCode, "\n") {
-		diff.WriteString(fmt.Sprintf("# > %s\n", line))
+		fmt.Fprintf(&diff, "# > %s\n", line)
 	}
 
-	if err := os.WriteFile(diffFile, []byte(diff.String()), 0o644); err != nil {
-		a.debugLog("Failed to save mismatch diff: %v", err)
+	f, err := os.CreateTemp("", "gh-review-conductor-mismatch-*.diff")
+	if err != nil {
+		a.debugLog("Failed to create mismatch diff temp file: %v", err)
 		return ""
 	}
+	name := f.Name()
 
-	a.debugLog("Saved diagnostic diff to: %s", diffFile)
-	return diffFile
+	if _, err := f.WriteString(diff.String()); err != nil {
+		_ = f.Close()
+		a.debugLog("Failed to write mismatch diff: %v", err)
+		return ""
+	}
+	_ = f.Close()
+
+	a.debugLog("Saved diagnostic diff to: %s", name)
+	return name
 }
 
 // showGitDiff shows the git diff for a file after applying changes
@@ -627,24 +634,33 @@ func (a *Applier) applyWithAI(comment *github.ReviewComment, autoApply bool) err
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Save failed AI patch for debugging
-		patchFile := fmt.Sprintf("/tmp/gh-review-conductor-ai-patch-%d.patch", comment.ID)
-		patchContent := fmt.Sprintf("# AI-generated patch for comment ID %d\n", comment.ID)
-		patchContent += fmt.Sprintf("# File: %s\n", comment.Path)
-		patchContent += fmt.Sprintf("# AI Provider: %s\n", a.aiProvider.Name())
-		patchContent += fmt.Sprintf("# Confidence: %.0f%%\n", resp.Confidence*100)
-		patchContent += fmt.Sprintf("# Error: %v\n", err)
-		patchContent += "# git apply output:\n"
+		var patchContent strings.Builder
+		fmt.Fprintf(&patchContent, "# AI-generated patch for comment ID %d\n", comment.ID)
+		fmt.Fprintf(&patchContent, "# File: %s\n", comment.Path)
+		fmt.Fprintf(&patchContent, "# AI Provider: %s\n", a.aiProvider.Name())
+		fmt.Fprintf(&patchContent, "# Confidence: %.0f%%\n", resp.Confidence*100)
+		fmt.Fprintf(&patchContent, "# Error: %v\n", err)
+		fmt.Fprintf(&patchContent, "# git apply output:\n")
 		for _, line := range strings.Split(string(output), "\n") {
-			patchContent += fmt.Sprintf("# %s\n", line)
+			fmt.Fprintf(&patchContent, "# %s\n", line)
 		}
-		patchContent += "#\n# Generated patch:\n#\n"
-		patchContent += resp.Patch
+		fmt.Fprintf(&patchContent, "#\n# Generated patch:\n#\n")
+		patchContent.WriteString(resp.Patch)
 
-		if err := os.WriteFile(patchFile, []byte(patchContent), 0o644); err != nil {
-			a.debugLog("Failed to save AI patch to %s: %v", patchFile, err)
+		patchFile, tmpErr := os.CreateTemp("", "gh-review-conductor-ai-patch-*.patch")
+		if tmpErr != nil {
+			a.debugLog("Failed to create AI patch temp file: %v", tmpErr)
+			return fmt.Errorf("failed to apply AI-generated patch: %w\nOutput: %s", err, string(output))
 		}
+		patchFileName := patchFile.Name()
+		_, writeErr := patchFile.WriteString(patchContent.String())
+		_ = patchFile.Close()
+		if writeErr != nil {
+			a.debugLog("Failed to write AI patch to %s: %v", patchFileName, writeErr)
+		}
+
 		return fmt.Errorf("failed to apply AI-generated patch (saved to %s): %w\nOutput: %s",
-			patchFile, err, string(output))
+			patchFileName, err, string(output))
 	}
 
 	return nil
@@ -952,13 +968,13 @@ func (r *suggestionRenderer) PreviewWithHighlight(comment *github.ReviewComment,
 
 	// Thread replies (just summary)
 	if len(comment.ThreadComments) > 0 && lines < maxLines {
-		preview.WriteString(fmt.Sprintf("\n--- %d Replies ---\n", len(comment.ThreadComments)))
+		fmt.Fprintf(&preview, "\n--- %d Replies ---\n", len(comment.ThreadComments))
 		for i, threadComment := range comment.ThreadComments {
 			if lines >= maxLines-1 {
 				preview.WriteString("...\n")
 				break
 			}
-			preview.WriteString(fmt.Sprintf("Reply %d by @%s\n", i+1, threadComment.Author))
+			fmt.Fprintf(&preview, "Reply %d by @%s\n", i+1, threadComment.Author)
 			lines++
 		}
 	}

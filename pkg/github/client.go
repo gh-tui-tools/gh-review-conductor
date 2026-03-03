@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/cli/go-gh/v2"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/diffposition"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/parser"
-	"github.com/cli/go-gh/v2"
 )
 
 type Client struct {
@@ -303,16 +304,131 @@ func (c *Client) getRepo() (string, error) {
 
 func (c *Client) GetCurrentBranchPR() (int, error) {
 	stdOut, _, err := gh.Exec("pr", "view", "--json", "number", "--jq", ".number")
+	if err == nil {
+		var prNumber int
+		if err := json.Unmarshal(stdOut.Bytes(), &prNumber); err != nil {
+			return 0, fmt.Errorf("failed to parse PR number: %w", err)
+		}
+		return prNumber, nil
+	}
+
+	// gh pr view failed — try fork-based detection for repos where the PR
+	// was opened from a fork (e.g., contributor PRs on WebKit/WebKit).
+	c.debugLog("gh pr view failed, trying fork-based PR detection")
+	prNumber, forkErr := c.findForkPR()
+	if forkErr == nil {
+		return prNumber, nil
+	}
+	c.debugLog("Fork-based PR detection failed: %v", forkErr)
+
+	return 0, fmt.Errorf("no PR found for current branch (use: gh review-conductor list <PR_NUMBER>)")
+}
+
+// findForkPR searches for a PR opened from a fork by checking which remotes
+// have a branch matching the current local branch, then querying the GitHub
+// API with the fork-qualified head ref (owner:branch).
+func (c *Client) findForkPR() (int, error) {
+	repo, err := c.getRepo()
 	if err != nil {
-		return 0, fmt.Errorf("no PR found for current branch (use: gh review-conductor list <PR_NUMBER>)")
+		return 0, err
 	}
 
-	var prNumber int
-	if err := json.Unmarshal(stdOut.Bytes(), &prNumber); err != nil {
-		return 0, fmt.Errorf("failed to parse PR number: %w", err)
+	// Get current branch name
+	branchBytes, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	if branch == "" || branch == "HEAD" {
+		return 0, fmt.Errorf("not on a named branch")
 	}
 
-	return prNumber, nil
+	// Find remote branches that match */branch
+	remoteBranchBytes, err := exec.Command("git", "branch", "-r", "--list", fmt.Sprintf("*/%s", branch)).Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to list remote branches: %w", err)
+	}
+
+	// Parse remote names from "remote/branch" entries
+	var remoteNames []string
+	for _, line := range strings.Split(string(remoteBranchBytes), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format is "remote/branch" — extract just the remote name
+		parts := strings.SplitN(line, "/", 2)
+		if len(parts) == 2 {
+			remote := parts[0]
+			// Skip origin since gh pr view already checked it
+			if remote == "origin" {
+				continue
+			}
+			remoteNames = append(remoteNames, remote)
+		}
+	}
+
+	if len(remoteNames) == 0 {
+		return 0, fmt.Errorf("no fork remotes found with branch %s", branch)
+	}
+
+	// For each remote, get the GitHub owner from the remote URL and query
+	for _, remote := range remoteNames {
+		remoteURLBytes, err := exec.Command("git", "remote", "get-url", remote).Output()
+		if err != nil {
+			continue
+		}
+		owner := extractGitHubOwner(string(remoteURLBytes))
+		if owner == "" {
+			continue
+		}
+
+		c.debugLog("Trying fork PR detection: head=%s:%s in repo %s", owner, branch, repo)
+
+		// Query REST API for PRs with this fork-qualified head ref
+		stdOut, _, err := gh.Exec("api",
+			fmt.Sprintf("repos/%s/pulls?head=%s:%s&state=open", repo, owner, branch),
+			"--jq", ".[0].number")
+		if err != nil {
+			continue
+		}
+
+		numStr := strings.TrimSpace(stdOut.String())
+		if numStr == "" || numStr == "null" {
+			continue
+		}
+
+		var prNumber int
+		if err := json.Unmarshal([]byte(numStr), &prNumber); err != nil {
+			continue
+		}
+
+		if prNumber > 0 {
+			return prNumber, nil
+		}
+	}
+
+	return 0, fmt.Errorf("no PR found from fork remotes for branch %s", branch)
+}
+
+// extractGitHubOwner extracts the GitHub username/org from a remote URL.
+// Supports both SSH (git@github.com:owner/repo.git) and HTTPS
+// (https://github.com/owner/repo.git) formats.
+func extractGitHubOwner(remoteURL string) string {
+	remoteURL = strings.TrimSpace(remoteURL)
+
+	_, after, found := strings.Cut(remoteURL, "github.com:")
+	if !found {
+		_, after, found = strings.Cut(remoteURL, "github.com/")
+	}
+
+	if found {
+		if owner, _, ok := strings.Cut(after, "/"); ok {
+			return owner
+		}
+	}
+
+	return ""
 }
 
 // ListOpenPRs fetches all open pull requests for the repository

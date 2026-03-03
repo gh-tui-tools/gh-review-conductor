@@ -645,7 +645,8 @@ pkg/
 │   └── diffposition.go    # Map between old/new file versions
 │
 ├── github/                # GitHub API client
-│   └── client.go          # GraphQL + REST API calls
+│   ├── client.go          # GraphQL + REST API calls
+│   └── client_test.go     # Tests for URL parsing helpers
 │
 ├── parser/                # Suggestion extraction
 │   └── suggestion.go      # Parse ```suggestion blocks
@@ -656,8 +657,7 @@ pkg/
     ├── pr_selector.go     # PR selection widget
     ├── quote.go           # Quote formatting for replies
     ├── selector.go        # Generic TUI selector (types)
-    ├── selector_nocov.go  # Interactive TUI code
-    └── selector_cov.go    # Stubs for coverage builds
+    └── selector_impl.go   # Interactive TUI implementation
 ```
 
 ---
@@ -707,6 +707,45 @@ pkg/
 │  Eyes       int   # 👀 count        │
 └─────────────────────────────────────┘
 ```
+
+### PR Number Detection
+
+When no PR number is given as an argument, the tool auto-detects it:
+
+```
+GetCurrentBranchPR()
+        │
+        ▼
+┌─────────────────┐
+│ gh pr view      │──── Found? ───▶ Return PR number
+│ (current branch)│
+└────────┬────────┘
+         │ Not found (fork workflow)
+         ▼
+┌─────────────────┐
+│ findForkPR()    │
+└────────┬────────┘
+         │
+         ▼
+┌───────────────────────────────────────┐
+│ 1. git rev-parse ──▶ current branch   │
+│ 2. git branch -r ──▶ find remotes     │
+│    with matching branch               │
+│ 3. git remote get-url ─▶ extract      │
+│    GitHub owner from remote URL       │
+│ 4. REST API: /pulls?head=owner:branch │
+└───────────────────────────────────────┘
+         │
+    Found? ────▶ Return PR number
+         │
+    Not found ─▶ Fall back to interactive PR selector
+```
+
+This handles fork-based workflows where `origin` points to the upstream repo
+(e.g., `WebKit/WebKit`) but the PR was opened from a personal fork
+(e.g., `sideshowbarker/WebKit`). The `gh pr view` command can’t find these
+PRs because it only checks the default remote, so the fallback queries the
+REST API with the fork-qualified `head=owner:branch` parameter.
 
 ### API Call Flow
 
