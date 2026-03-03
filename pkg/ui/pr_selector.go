@@ -45,16 +45,16 @@ func (r *prItemRenderer) PreviewWithHighlight(pr *github.PullRequest, highlightI
 	preview.WriteString(Colorize(ColorCyan, strings.Repeat("=", 50)))
 	preview.WriteString("\n\n")
 
-	preview.WriteString(fmt.Sprintf("Title: %s\n", pr.Title))
-	preview.WriteString(fmt.Sprintf("Author: @%s\n", pr.Author))
-	preview.WriteString(fmt.Sprintf("Branch: %s\n", pr.HeadRefName))
+	fmt.Fprintf(&preview, "Title: %s\n", pr.Title)
+	fmt.Fprintf(&preview, "Author: @%s\n", pr.Author)
+	fmt.Fprintf(&preview, "Branch: %s\n", pr.HeadRefName)
 
 	if pr.IsDraft {
 		preview.WriteString(Colorize(ColorYellow, "\nStatus: Draft\n"))
 	}
 
 	if pr.ReviewDecision != "" {
-		preview.WriteString(fmt.Sprintf("\nReview Status: %s\n", formatReviewStatus(pr.ReviewDecision)))
+		fmt.Fprintf(&preview, "\nReview Status: %s\n", formatReviewStatus(pr.ReviewDecision))
 	}
 
 	preview.WriteString("\n" + Colorize(ColorGray, "Press Enter to select this PR"))
