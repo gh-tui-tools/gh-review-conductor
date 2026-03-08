@@ -620,3 +620,58 @@ func TestFormatReactions(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateDiffTail(t *testing.T) {
+	tests := []struct {
+		name     string
+		diff     string
+		maxLines int
+		expected string
+	}{
+		{
+			name:     "no truncation needed",
+			diff:     "line1\nline2\nline3",
+			maxLines: 5,
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name:     "exact limit",
+			diff:     "line1\nline2\nline3",
+			maxLines: 3,
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name:     "takes last N lines",
+			diff:     "line1\nline2\nline3\nline4\nline5",
+			maxLines: 3,
+			expected: "...\nline3\nline4\nline5",
+		},
+		{
+			name:     "zero maxLines means no truncation",
+			diff:     "line1\nline2\nline3",
+			maxLines: 0,
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name:     "negative maxLines means no truncation",
+			diff:     "line1\nline2",
+			maxLines: -1,
+			expected: "line1\nline2",
+		},
+		{
+			name:     "single line no truncation",
+			diff:     "single",
+			maxLines: 1,
+			expected: "single",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := TruncateDiffTail(tt.diff, tt.maxLines)
+			if result != tt.expected {
+				t.Errorf("TruncateDiffTail(%q, %d) = %q, want %q", tt.diff, tt.maxLines, result, tt.expected)
+			}
+		})
+	}
+}

@@ -45,11 +45,118 @@ func (a *Applier) SetGitHubClient(client *github.Client) {
 	a.githubClient = client
 }
 
+// ApplySuggestion applies a suggestion using the comment's StartLine/Line fields directly.
+// This is used by the Browse view where the suggestion targets are known line ranges.
+// The "apply" subcommand uses applySuggestion instead, which parses the diff hunk.
+func (a *Applier) ApplySuggestion(comment *github.ReviewComment) error {
+	if err := validatePath(comment.Path); err != nil {
+		return err
+	}
+
+	fileContent, err := os.ReadFile(comment.Path)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", comment.Path, err)
+	}
+	fileLines := strings.Split(string(fileContent), "\n")
+
+	targetLine, removeCount, err := a.findReplacementTargetByLineRange(comment, fileLines)
+	if err != nil {
+		return err
+	}
+
+	suggestionLines := strings.Split(strings.TrimSuffix(comment.SuggestedCode, "\n"), "\n")
+
+	var newFileLines []string
+	newFileLines = append(newFileLines, fileLines[:targetLine]...)
+	newFileLines = append(newFileLines, suggestionLines...)
+	if targetLine+removeCount < len(fileLines) {
+		newFileLines = append(newFileLines, fileLines[targetLine+removeCount:]...)
+	}
+
+	newContent := strings.Join(newFileLines, "\n")
+	if strings.HasSuffix(string(fileContent), "\n") && !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+
+	if err := os.WriteFile(comment.Path, []byte(newContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", comment.Path, err)
+	}
+
+	return nil
+}
+
+// PreviewSuggestion generates a diff preview of what applying the suggestion would change.
+// Returns the diff string without actually modifying the file.
+func (a *Applier) PreviewSuggestion(comment *github.ReviewComment) (string, error) {
+	if err := validatePath(comment.Path); err != nil {
+		return "", err
+	}
+
+	// Read the current file
+	fileContent, err := os.ReadFile(comment.Path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file %s: %w", comment.Path, err)
+	}
+	fileLines := strings.Split(string(fileContent), "\n")
+
+	// Find the lines to replace
+	targetLine, removeCount, err := a.findReplacementTargetByLineRange(comment, fileLines)
+	if err != nil {
+		return "", err
+	}
+
+	// Build a unified diff preview
+	var diff strings.Builder
+	fmt.Fprintf(&diff, "--- a/%s\n", comment.Path)
+	fmt.Fprintf(&diff, "+++ b/%s\n", comment.Path)
+	suggestionLines := strings.Split(strings.TrimSuffix(comment.SuggestedCode, "\n"), "\n")
+	fmt.Fprintf(&diff, "@@ -%d,%d +%d,%d @@\n",
+		targetLine+1, removeCount,
+		targetLine+1, len(suggestionLines))
+
+	// Show lines being removed
+	for i := 0; i < removeCount; i++ {
+		if targetLine+i < len(fileLines) {
+			fmt.Fprintf(&diff, "-%s\n", fileLines[targetLine+i])
+		}
+	}
+
+	// Show lines being added
+	for _, line := range suggestionLines {
+		fmt.Fprintf(&diff, "+%s\n", line)
+	}
+
+	return diff.String(), nil
+}
+
 // debugLog prints debug messages if debug mode is enabled
 func (a *Applier) debugLog(format string, args ...interface{}) {
 	if a.debug {
 		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
 	}
+}
+
+// validatePath checks that the given path does not escape the current working directory.
+// This prevents path traversal attacks where a malicious PR could reference paths
+// like "../../../etc/passwd" to read or write arbitrary files on the system.
+func validatePath(path string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Resolve to absolute and clean the path (collapses ../ sequences)
+	absPath := filepath.Clean(filepath.Join(cwd, path))
+	if filepath.IsAbs(path) {
+		absPath = filepath.Clean(path)
+	}
+
+	// The resolved path must be within the working directory
+	if !strings.HasPrefix(absPath, cwd+string(filepath.Separator)) {
+		return fmt.Errorf("path %q resolves outside the repository (%s)", path, cwd)
+	}
+
+	return nil
 }
 
 // ApplyAll applies all suggestions without prompting
@@ -251,6 +358,10 @@ func (a *Applier) promptForAction() string {
 func (a *Applier) applySuggestion(comment *github.ReviewComment) error {
 	a.debugLog("Applying suggestion for comment ID=%d, Path=%s, Line=%d", comment.ID, comment.Path, comment.Line)
 
+	if err := validatePath(comment.Path); err != nil {
+		return err
+	}
+
 	// Read the current file
 	fileContent, err := os.ReadFile(comment.Path)
 	if err != nil {
@@ -300,7 +411,39 @@ func (a *Applier) applySuggestion(comment *github.ReviewComment) error {
 	return nil
 }
 
-// findReplacementTarget identifies the start line and number of lines to replace
+// findReplacementTargetByLineRange uses the comment's StartLine/Line fields
+// to determine the replacement range. Used by Browse view actions.
+func (a *Applier) findReplacementTargetByLineRange(comment *github.ReviewComment, fileLines []string) (int, int, error) {
+	// Use the comment's line range fields to determine what to replace
+	// StartLine and Line define the range of lines the suggestion applies to
+	startLine := comment.StartLine
+	endLine := comment.Line
+
+	// If StartLine is 0, it's a single-line suggestion
+	if startLine == 0 {
+		startLine = endLine
+	}
+
+	a.debugLog("Suggestion targets lines %d-%d (1-based)", startLine, endLine)
+
+	// Convert to 0-based index
+	targetLine := startLine - 1
+	removeCount := endLine - startLine + 1
+
+	// Validate the range
+	if targetLine < 0 || targetLine >= len(fileLines) {
+		return -1, 0, fmt.Errorf("target line %d is out of bounds (file has %d lines)", startLine, len(fileLines))
+	}
+	if targetLine+removeCount > len(fileLines) {
+		return -1, 0, fmt.Errorf("target range %d-%d exceeds file length (%d lines)", startLine, endLine, len(fileLines))
+	}
+
+	return targetLine, removeCount, nil
+}
+
+// findReplacementTarget identifies the start line and number of lines to replace.
+// Uses a two-strategy approach: position mapping from the diff hunk, then content matching.
+// Used by the "apply" subcommand.
 func (a *Applier) findReplacementTarget(comment *github.ReviewComment, fileLines []string) (int, int, error) {
 	// Extract the lines that were added in the PR (+ lines) from DiffHunk
 	// These are the lines we expect to find in the local file and replace
@@ -523,6 +666,10 @@ func (a *Applier) showGitDiff(filePath string) {
 // applyWithAI uses AI to apply a suggestion intelligently
 func (a *Applier) applyWithAI(comment *github.ReviewComment, autoApply bool) error {
 	ctx := context.Background()
+
+	if err := validatePath(comment.Path); err != nil {
+		return err
+	}
 
 	// Read current file
 	fileContent, err := os.ReadFile(comment.Path)

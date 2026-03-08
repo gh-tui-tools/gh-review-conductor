@@ -220,6 +220,41 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle apply suggestion preview mode
+		if m.applyPreviewMode {
+			switch msg.String() {
+			case "y", "Y":
+				// Confirm and apply the suggestion
+				m.applyPreviewMode = false
+				var action CustomAction[T]
+				if m.applyPreviewWithResolve {
+					action = m.opts.ApplySuggestionResolveAction
+				} else {
+					action = m.opts.ApplySuggestionAction
+				}
+				if action != nil {
+					statusMsg, err := action(m.applyPreviewItem.value)
+					if err != nil {
+						m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", Colorize(ColorRed, err.Error()))
+						return m, nil
+					}
+					if statusMsg != "" {
+						m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", statusMsg)
+						return m, nil
+					}
+				}
+				return m, nil
+			case "esc", "n", "N":
+				// Cancel
+				m.applyPreviewMode = false
+				return m, m.list.NewStatusMessage("Apply cancelled")
+			default:
+				// Any other key cancels
+				m.applyPreviewMode = false
+				return m, m.list.NewStatusMessage("Apply cancelled")
+			}
+		}
+
 		// Handle comment selection mode
 		if m.commentSelectMode {
 			switch msg.String() {
@@ -347,6 +382,12 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "x":
 				// Add reaction from detail view
 				return m.handleReactionKey(true)
+			case "s":
+				// Apply suggestion from detail view (with preview)
+				return m.startApplyPreview(false)
+			case "S":
+				// Apply suggestion and resolve from detail view (with preview)
+				return m.startApplyPreview(true)
 			case "i":
 				// Refresh from detail view
 				return m.startRefresh()
@@ -494,6 +535,12 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "s":
+			// Apply suggestion (with preview)
+			return m.startApplyPreview(false)
+		case "S":
+			// Apply suggestion and resolve (with preview)
+			return m.startApplyPreview(true)
 		case "x":
 			// Add reaction
 			return m.handleReactionKey(false)
@@ -504,6 +551,37 @@ func (m SelectionModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+// startApplyPreview initiates the apply suggestion preview mode
+func (m *SelectionModel[T]) startApplyPreview(withResolve bool) (tea.Model, tea.Cmd) {
+	if m.opts.ApplySuggestionPreview == nil {
+		// No preview configured, show error
+		m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", Colorize(ColorRed, "Apply preview not configured"))
+		return m, nil
+	}
+
+	selected := m.list.SelectedItem()
+	if selected == nil {
+		return m, nil
+	}
+
+	item := selected.(listItem[T])
+
+	// Get the preview diff
+	diffPreview, err := m.opts.ApplySuggestionPreview(item.value)
+	if err != nil {
+		m.confirmationMessage = fmt.Sprintf("%s\n\nPress any key to continue...", Colorize(ColorRed, err.Error()))
+		return m, nil
+	}
+
+	// Enter preview mode
+	m.applyPreviewMode = true
+	m.applyPreviewDiff = diffPreview
+	m.applyPreviewItem = item
+	m.applyPreviewWithResolve = withResolve
+
+	return m, nil
 }
 
 // editInEditor opens the given file path in the user's editor at the specified line
@@ -706,6 +784,10 @@ func (m SelectionModel[T]) View() string {
 		return m.renderConfirmation()
 	}
 
+	if m.applyPreviewMode {
+		return m.renderApplyPreview()
+	}
+
 	if m.showDetail {
 		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
@@ -740,6 +822,14 @@ func (m SelectionModel[T]) View() string {
 		if m.opts.ReactionAction != nil {
 			key, _ := splitActionKey(m.opts.ReactionKey)
 			actions = append(actions, key+":react")
+		}
+		if m.opts.ApplySuggestionAction != nil {
+			key, _ := splitActionKey(m.opts.ApplySuggestionKey)
+			actions = append(actions, key+":apply")
+		}
+		if m.opts.ApplySuggestionResolveAction != nil {
+			key, _ := splitActionKey(m.opts.ApplySuggestionResolveKey)
+			actions = append(actions, key+":apply+resolve")
 		}
 		if m.opts.OnOpen != nil {
 			actions = append(actions, "o:open")
@@ -821,6 +911,14 @@ func (m SelectionModel[T]) View() string {
 		key, _ := splitActionKey(m.opts.ReactionKey)
 		actions = append(actions, key+":react")
 	}
+	if m.opts.ApplySuggestionAction != nil {
+		key, _ := splitActionKey(m.opts.ApplySuggestionKey)
+		actions = append(actions, key+":apply")
+	}
+	if m.opts.ApplySuggestionResolveAction != nil {
+		key, _ := splitActionKey(m.opts.ApplySuggestionResolveKey)
+		actions = append(actions, key+":apply+resolve")
+	}
 	if m.opts.OnOpen != nil {
 		actions = append(actions, "o:open")
 	}
@@ -852,6 +950,50 @@ func (m SelectionModel[T]) View() string {
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		m.list.View(),
+		"",
+		footer,
+	)
+}
+
+func (m SelectionModel[T]) renderApplyPreview() string {
+	height := m.windowSize.Height
+	if height == 0 {
+		height = 24
+	}
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	// Header
+	actionText := "Apply Suggestion"
+	if m.applyPreviewWithResolve {
+		actionText = "Apply Suggestion + Resolve"
+	}
+	header := titleStyle.Render(actionText) + "  " + helpStyle.Render("Press 'y' to apply, any other key to cancel")
+
+	// Footer
+	footer := helpStyle.Render("y:apply | any other key:cancel")
+
+	// Colorize the diff
+	coloredDiff := ColorizeDiff(m.applyPreviewDiff)
+
+	// Calculate available height for diff
+	headerHeight := lipgloss.Height(header) + 1
+	footerHeight := lipgloss.Height(footer) + 1
+	availableHeight := height - headerHeight - footerHeight - 2
+
+	// Truncate if too long
+	diffLines := strings.Split(coloredDiff, "\n")
+	if len(diffLines) > availableHeight {
+		diffLines = diffLines[:availableHeight-1]
+		diffLines = append(diffLines, helpStyle.Render("... (diff truncated)"))
+	}
+	displayDiff := strings.Join(diffLines, "\n")
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		"",
+		displayDiff,
 		"",
 		footer,
 	)
@@ -956,6 +1098,14 @@ Actions:`
 	}
 	if m.opts.ReactionAction != nil {
 		key, desc := splitActionKey(m.opts.ReactionKey)
+		helpText += fmt.Sprintf("\n  %-12s %s", key, desc)
+	}
+	if m.opts.ApplySuggestionAction != nil {
+		key, desc := splitActionKey(m.opts.ApplySuggestionKey)
+		helpText += fmt.Sprintf("\n  %-12s %s", key, desc)
+	}
+	if m.opts.ApplySuggestionResolveAction != nil {
+		key, desc := splitActionKey(m.opts.ApplySuggestionResolveKey)
 		helpText += fmt.Sprintf("\n  %-12s %s", key, desc)
 	}
 	if m.opts.OnOpen != nil {
