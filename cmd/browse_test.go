@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/gh-tui-tools/gh-review-conductor/pkg/applier"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/github"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/ui"
 )
@@ -358,5 +361,181 @@ func TestStripMarkdownForPreview(t *testing.T) {
 				t.Errorf("stripMarkdownForPreview(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestPreviewWithHighlight_SuggestionDiff(t *testing.T) {
+	// Create a temp file so PreviewSuggestion can read it
+	dir := t.TempDir()
+	// Resolve symlinks so paths match os.Getwd() on macOS (/var -> /private/var)
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(dir, "test.go")
+	fileContent := "package main\n\nfunc hello() {\n\tfmt.Println(\"hello\")\n}\n"
+	if err := os.WriteFile(filePath, []byte(fileContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// chdir so validatePath accepts the file path
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	app := applier.New()
+
+	renderer := &browseItemRenderer{
+		repo:           "owner/repo",
+		prNumber:       123,
+		collapsedFiles: make(map[string]bool),
+		applier:        app,
+	}
+
+	item := BrowseItem{
+		Type: "comment",
+		Path: filePath,
+		Comment: &github.ReviewComment{
+			ID:            1,
+			Author:        "reviewer",
+			Body:          "Use Println from log package",
+			Path:          filePath,
+			Line:          4,
+			StartLine:     0,
+			HasSuggestion: true,
+			SuggestedCode: "\tlog.Println(\"hello\")\n",
+		},
+	}
+
+	preview := renderer.PreviewWithHighlight(item, -1)
+
+	// Should show "Suggestion Diff" header (not "Suggested Code")
+	if !strings.Contains(preview, "Suggestion Diff") {
+		t.Errorf("preview should contain \"Suggestion Diff\" header, got:\n%s", preview)
+	}
+
+	// Should contain actual diff markers
+	if !strings.Contains(preview, "-\tfmt.Println") {
+		t.Errorf("preview should show removed line with -, got:\n%s", preview)
+	}
+	if !strings.Contains(preview, "+\tlog.Println") {
+		t.Errorf("preview should show added line with +, got:\n%s", preview)
+	}
+}
+
+func TestPreviewWithHighlight_SuggestionDiffFallback(t *testing.T) {
+	// When file doesn\'t exist, should fall back to "Suggested Code"
+	renderer := &browseItemRenderer{
+		repo:           "owner/repo",
+		prNumber:       123,
+		collapsedFiles: make(map[string]bool),
+		applier:        applier.New(),
+	}
+
+	item := BrowseItem{
+		Type: "comment",
+		Path: "/nonexistent/file.go",
+		Comment: &github.ReviewComment{
+			ID:            1,
+			Author:        "reviewer",
+			Body:          "Fix this",
+			Path:          "/nonexistent/file.go",
+			Line:          1,
+			StartLine:     0,
+			HasSuggestion: true,
+			SuggestedCode: "replacement code\n",
+		},
+	}
+
+	preview := renderer.PreviewWithHighlight(item, -1)
+
+	// Should fall back to "Suggested Code" header
+	if !strings.Contains(preview, "Suggested Code") {
+		t.Errorf("preview should fall back to \"Suggested Code\" when file missing, got:\n%s", preview)
+	}
+}
+
+func TestPreviewWithHighlight_NoApplier(t *testing.T) {
+	// When no applier is set, should show "Suggested Code"
+	renderer := &browseItemRenderer{
+		repo:           "owner/repo",
+		prNumber:       123,
+		collapsedFiles: make(map[string]bool),
+		applier:        nil,
+	}
+
+	item := BrowseItem{
+		Type: "comment",
+		Path: "test.go",
+		Comment: &github.ReviewComment{
+			ID:            1,
+			Author:        "reviewer",
+			Body:          "Fix this",
+			Path:          "test.go",
+			Line:          1,
+			StartLine:     0,
+			HasSuggestion: true,
+			SuggestedCode: "replacement\n",
+		},
+	}
+
+	preview := renderer.PreviewWithHighlight(item, -1)
+
+	if !strings.Contains(preview, "Suggested Code") {
+		t.Errorf("preview should show \"Suggested Code\" without applier, got:\n%s", preview)
+	}
+}
+
+func TestPreviewWithHighlight_ContextShowsTail(t *testing.T) {
+	renderer := &browseItemRenderer{
+		repo:           "owner/repo",
+		prNumber:       123,
+		collapsedFiles: make(map[string]bool),
+	}
+
+	// Create a long diff hunk (like a new file) where the context near
+	// the comment is at the end
+	var hunkLines []string
+	hunkLines = append(hunkLines, "@@ -0,0 +1,20 @@")
+	for i := 1; i <= 20; i++ {
+		hunkLines = append(hunkLines, "+line "+strings.Repeat("x", i))
+	}
+	longHunk := strings.Join(hunkLines, "\n")
+
+	item := BrowseItem{
+		Type: "comment",
+		Path: "newfile.go",
+		Comment: &github.ReviewComment{
+			ID:       1,
+			Author:   "reviewer",
+			Body:     "Comment near end of file",
+			Path:     "newfile.go",
+			Line:     20,
+			DiffHunk: longHunk,
+		},
+	}
+
+	preview := renderer.PreviewWithHighlight(item, -1)
+
+	// Should contain "Context" header
+	if !strings.Contains(preview, "Context") {
+		t.Errorf("preview should contain Context section, got:\n%s", preview)
+	}
+
+	// Should show lines near the end (tail), not the beginning
+	// The last line is "+line xxxxxxxxxxxxxxxxxxxx" (20 x's)
+	if !strings.Contains(preview, strings.Repeat("x", 20)) {
+		t.Errorf("preview context should show tail lines (near comment), got:\n%s", preview)
+	}
+
+	// Should NOT show the very first content line (line 1 with 1 x)
+	// unless the hunk is short enough to show entirely
+	if strings.Contains(preview, "+line x\n") {
+		t.Errorf("preview context should not show lines from start of long hunk, got:\n%s", preview)
 	}
 }

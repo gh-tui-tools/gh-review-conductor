@@ -120,6 +120,20 @@ func TruncateDiff(diff string, maxLines int) string {
 	return strings.Join(lines[:maxLines], "\n") + "\n..."
 }
 
+// TruncateDiffTail returns the last maxLines lines of a diff, keeping the
+// lines closest to the comment. If the diff is already short enough, it is
+// returned unchanged.
+func TruncateDiffTail(diff string, maxLines int) string {
+	if maxLines <= 0 {
+		return diff
+	}
+	lines := strings.Split(diff, "\n")
+	if len(lines) <= maxLines {
+		return diff
+	}
+	return "...\n" + strings.Join(lines[len(lines)-maxLines:], "\n")
+}
+
 // ColorizeDiff applies syntax highlighting to diff hunks
 func ColorizeDiff(diff string) string {
 	lines := strings.Split(diff, "\n")

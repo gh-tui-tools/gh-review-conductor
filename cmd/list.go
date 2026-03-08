@@ -119,7 +119,8 @@ func runList(cmd *cobra.Command, args []string) error {
 func filterByThreadID(comments []*github.ReviewComment, threadID string) []*github.ReviewComment {
 	filtered := comments[:0]
 	for _, comment := range comments {
-		if comment.ThreadID == threadID {
+		// Match by GraphQL thread ID or by comment database ID
+		if comment.ThreadID == threadID || fmt.Sprintf("%d", comment.ID) == threadID {
 			filtered = append(filtered, comment)
 		}
 	}
