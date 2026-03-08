@@ -114,9 +114,18 @@ type SelectorOptions[T any] struct {
 	EditKey    string // e.g., "e edit"
 
 	// Action: x (add reaction)
-	ReactionAction   func(T) (int64, error)                                       // Returns comment ID to react to
+	ReactionAction   func(T) (int64, error)                                                      // Returns comment ID to react to
 	ReactionComplete func(item T, commentID int64, apiName, displayEmoji string) (string, error) // Applies reaction, returns confirmation message
-	ReactionKey      string                                                       // e.g., "x react"
+	ReactionKey      string                                                                      // e.g., "x react"
+
+	// Action: s (apply suggestion)
+	ApplySuggestionPreview CustomAction[T] // Returns diff preview string
+	ApplySuggestionAction  CustomAction[T] // Actually applies the suggestion
+	ApplySuggestionKey     string          // e.g., "s apply"
+
+	// Action: S (apply suggestion and resolve)
+	ApplySuggestionResolveAction CustomAction[T]
+	ApplySuggestionResolveKey    string // e.g., "S apply+resolve"
 }
 
 // SelectionModel is the tea.Model for interactive selection
@@ -160,6 +169,12 @@ type SelectionModel[T any] struct {
 	reactionIdx       int         // current emoji index (0-7)
 	reactionCommentID int64       // comment ID to react to
 	reactionItem      listItem[T] // the item being reacted to
+
+	// Apply suggestion preview state
+	applyPreviewMode       bool        // true when showing apply preview
+	applyPreviewDiff       string      // the diff to show
+	applyPreviewItem       listItem[T] // the item being applied
+	applyPreviewWithResolve bool       // true if should also resolve after applying
 }
 
 // listItem wraps a generic item for the list model

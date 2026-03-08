@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gh-tui-tools/gh-review-conductor/pkg/applier"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/github"
 	"github.com/gh-tui-tools/gh-review-conductor/pkg/ui"
 	"github.com/spf13/cobra"
@@ -326,6 +327,59 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			return fmt.Sprintf("%s %s.", displayEmoji, link), nil
 		}
 
+		// Apply suggestion actions
+		app := applier.New()
+		app.SetDebug(browseDebug)
+		app.SetGitHubClient(client)
+		renderer.applier = app
+
+		checkSuggestionPreconditions := func(item BrowseItem) error {
+			if item.Type == "file" {
+				return fmt.Errorf("cannot apply to file header")
+			}
+			if !item.Comment.HasSuggestion {
+				return fmt.Errorf("no suggestion to apply")
+			}
+			return nil
+		}
+
+		applyAndGetMessage := func(item BrowseItem) (string, error) {
+			if err := checkSuggestionPreconditions(item); err != nil {
+				return "", err
+			}
+			if err := app.ApplySuggestion(item.Comment); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Applied suggestion to %s:%d", item.Comment.Path, item.Comment.Line), nil
+		}
+
+		applySuggestionPreview := func(item BrowseItem) (string, error) {
+			if err := checkSuggestionPreconditions(item); err != nil {
+				return "", err
+			}
+			return app.PreviewSuggestion(item.Comment)
+		}
+
+		applySuggestionAction := func(item BrowseItem) (string, error) {
+			return applyAndGetMessage(item)
+		}
+
+		applySuggestionResolveAction := func(item BrowseItem) (string, error) {
+			msg, err := applyAndGetMessage(item)
+			if err != nil {
+				return "", err
+			}
+			// Resolve the thread if possible
+			if item.Comment.ThreadID != "" && !item.Comment.IsResolved() {
+				if err := client.ResolveThread(item.Comment.ThreadID); err != nil {
+					return msg + " (failed to resolve thread)", nil
+				}
+				item.Comment.SubjectType = "resolved"
+				msg += " and resolved thread"
+			}
+			return msg, nil
+		}
+
 		selected, err := ui.Select(ui.SelectorOptions[BrowseItem]{
 			Items:    browseItems,
 			Renderer: renderer,
@@ -371,6 +425,15 @@ func runBrowse(cmd *cobra.Command, args []string) error {
 			ReactionAction:   reactionAction,
 			ReactionComplete: reactionComplete,
 			ReactionKey:      "x react",
+
+			// s key: apply suggestion
+			ApplySuggestionPreview: applySuggestionPreview,
+			ApplySuggestionAction:  applySuggestionAction,
+			ApplySuggestionKey:     "s apply",
+
+			// S key: apply suggestion and resolve
+			ApplySuggestionResolveAction: applySuggestionResolveAction,
+			ApplySuggestionResolveKey:    "S apply+resolve",
 		})
 		if err != nil {
 			if errors.Is(err, ui.ErrNoSelection) {
@@ -549,6 +612,7 @@ type browseItemRenderer struct {
 	repo           string
 	prNumber       int
 	collapsedFiles map[string]bool
+	applier        *applier.Applier
 }
 
 func (r *browseItemRenderer) Title(item BrowseItem) string {
@@ -679,25 +743,36 @@ func (r *browseItemRenderer) PreviewWithHighlight(item BrowseItem, highlightIdx 
 		}
 	}
 
-	// Suggested code (with syntax highlighting based on file type)
+	// Suggestion diff (show actual diff if applier is available and file exists locally)
 	if comment.HasSuggestion && comment.SuggestedCode != "" {
-		preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Suggested Code ---\n"))
-		lang := ui.CodeFenceLanguageFromPath(comment.Path)
-		md := fmt.Sprintf("```%s\n%s\n```", lang, comment.SuggestedCode)
-		if rendered, err := ui.RenderMarkdown(md); err == nil && rendered != "" {
-			preview.WriteString(rendered)
-		} else {
-			preview.WriteString(ui.Colorize(ui.ColorGreen, comment.SuggestedCode))
+		var showedDiff bool
+		if r.applier != nil {
+			if diffStr, err := r.applier.PreviewSuggestion(comment); err == nil {
+				preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Suggestion Diff ---\n"))
+				preview.WriteString(ui.ColorizeDiff(diffStr))
+				preview.WriteString("\n")
+				showedDiff = true
+			}
 		}
-		preview.WriteString("\n")
+		if !showedDiff {
+			preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Suggested Code ---\n"))
+			lang := ui.CodeFenceLanguageFromPath(comment.Path)
+			md := fmt.Sprintf("```%s\n%s\n```", lang, comment.SuggestedCode)
+			if rendered, err := ui.RenderMarkdown(md); err == nil && rendered != "" {
+				preview.WriteString(rendered)
+			} else {
+				preview.WriteString(ui.Colorize(ui.ColorGreen, comment.SuggestedCode))
+			}
+			preview.WriteString("\n")
+		}
 	}
 
-	// Diff hunk/context (with coloring, limited to 8 lines for relevance)
+	// Diff hunk/context (show the last lines closest to the comment)
 	if comment.DiffHunk != "" {
 		diffLines := strings.Split(comment.DiffHunk, "\n")
 		if len(diffLines) > 2 {
 			preview.WriteString(ui.Colorize(ui.ColorCyan, "\n--- Context ---\n"))
-			truncated := ui.TruncateDiff(comment.DiffHunk, 8)
+			truncated := ui.TruncateDiffTail(comment.DiffHunk, 8)
 			preview.WriteString(ui.ColorizeDiff(truncated))
 			preview.WriteString("\n")
 		}
